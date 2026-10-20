@@ -37,7 +37,7 @@ def validate_job(self, job_id):
 @shared_task(bind=True, autoretry_for=(OSError, TimeoutError), retry_backoff=True, retry_kwargs={"max_retries": 3})
 def transcribe_job(self, job_id):
     with transaction.atomic():
-        job = AudioJob.objects.select_for_update().select_related("quote", "payment").get(pk=job_id)
+        job = AudioJob.objects.select_for_update().get(pk=job_id)
         if job.status != AudioJob.Status.PAID_QUEUED:
             return
         if job.audio_deleted_at or not default_storage.exists(job.original_key):

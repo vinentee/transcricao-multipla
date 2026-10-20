@@ -1,3 +1,4 @@
+{% load static %}
 <!doctype html>
 <html lang="pt-BR">
 <head>
@@ -11,5 +12,7 @@
   <header class="site-header"><div class="shell nav"><a class="brand" href="{% url 'dashboard' %}"><span class="brand-mark">≋</span>Voz em Texto</a><nav class="nav-links">{% if user.is_authenticated %}<a href="{% url 'dashboard' %}">Meus pedidos</a><span class="account">{{ user.email }}</span><form class="logout-form" method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="ghost">Sair</button></form>{% else %}<a href="{% url 'login' %}">Entrar</a>{% if allow_signups %}<a class="button secondary" href="{% url 'signup' %}">Criar conta</a>{% endif %}{% endif %}</nav></div></header>
   {% for message in messages %}<p class="alert">{{ message }}</p>{% endfor %}
   <main class="shell page">{% block content %}{% endblock %}</main>
+  <link rel="stylesheet" href="{% static 'jobs/progress.css' %}">
+  <script src="{% static 'jobs/progress.js' %}" defer></script>
 </body>
 </html>

@@ -1,0 +1,5 @@
+.spinner{display:inline-block;width:22px;height:22px;flex:none;border:3px solid #d9d5fb;border-top-color:var(--violet);border-radius:50%;animation:job-spin .8s linear infinite;vertical-align:middle}
+.processing-card{display:flex;align-items:center;gap:18px;padding:24px;margin-bottom:28px}.processing-card p{margin:5px 0 0}.poll-message{font-size:14px;min-height:21px}button:disabled{cursor:wait;opacity:.65;transform:none}button .spinner{width:16px;height:16px;margin-right:8px;border-color:#ffffff66;border-top-color:#fff}
+.order-row[data-busy="true"] .status::before{content:"";display:inline-block;width:10px;height:10px;border:2px solid #b8afff;border-top-color:var(--violet);border-radius:50%;margin-right:6px;animation:job-spin .8s linear infinite}
+@keyframes job-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner,.order-row[data-busy="true"] .status::before{animation:none}}
+@media(max-width:760px){.order-row .status{display:inline-block;white-space:normal;max-width:110px}}

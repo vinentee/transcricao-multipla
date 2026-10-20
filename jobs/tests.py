@@ -214,3 +214,60 @@ class JobTaskTests(TestCase):
         self.assertEqual(job.status, AudioJob.Status.READY)
         self.assertEqual(usage.charged_brl, Decimal("12.34"))
         provider.return_value.transcribe.assert_called_once_with("/tmp/chunk.m4a")
+        with patch("jobs.tasks.OpenAITranscriptionProvider") as duplicate_provider:
+            transcribe_job.run(str(job.id))
+        duplicate_provider.assert_not_called()
+
+
+@override_settings(DEV_BYPASS_PAYMENT=True)
+class JobProgressTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(email="progress@example.com", password="senha")
+        self.other = get_user_model().objects.create_user(email="private@example.com", password="senha")
+        self.job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.VALIDATING, original_key="progress.wav", original_filename="progress.wav")
+        self.private = AudioJob.objects.create(user=self.other, original_key="private.wav", original_filename="private.wav")
+
+    def test_progress_requires_login_and_hides_other_users_jobs(self):
+        for url in [reverse("jobs_status"), reverse("job_status", args=[self.job.id]), reverse("job_detail", args=[self.job.id]) + "?partial=1"]:
+            self.assertEqual(self.client.get(url).status_code, 302)
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.get(reverse("job_status", args=[self.private.id])).status_code, 404)
+        self.assertEqual(self.client.get(reverse("job_detail", args=[self.private.id]) + "?partial=1").status_code, 404)
+        payload = self.client.get(reverse("jobs_status")).json()
+        self.assertEqual([job["id"] for job in payload["jobs"]], [str(self.job.id)])
+
+    def test_status_and_fragment_follow_validation_quote_and_result(self):
+        self.client.force_login(self.user)
+        url = reverse("job_detail", args=[self.job.id]) + "?partial=1"
+        status_url = reverse("job_status", args=[self.job.id])
+        initial = self.client.get(status_url).json()
+        self.assertTrue(initial["busy"])
+        self.assertEqual(initial["label"], "Validando")
+        response = self.client.get(url)
+        self.assertContains(response, "Validando seu áudio")
+        self.assertNotContains(response, "<!doctype")
+        self.assertIn("no-store", response.headers["Cache-Control"])
+        Quote.objects.create(job=self.job, duration_seconds=60, total_brl="10.00", api_brl="1", infra_brl="1", pricing_snapshot={}, expires_at=timezone.now() + timezone.timedelta(minutes=30))
+        self.job.transition(AudioJob.Status.QUOTED)
+        self.assertContains(self.client.get(url), "Confirmar pagamento de teste")
+        quoted = self.client.get(status_url).json()
+        self.assertFalse(quoted["busy"])
+        self.assertNotEqual(quoted["version"], initial["version"])
+        self.job.status = AudioJob.Status.READY
+        self.job.save()
+        response = self.client.get(url)
+        self.assertContains(response, "Revise sua transcrição")
+        self.assertContains(response, "PDF")
+        self.assertNotContains(response, "processing-card")
+
+    @override_settings(MAX_UPLOAD_BYTES=104857600)
+    def test_dashboard_displays_configured_upload_limit(self):
+        self.client.force_login(self.user)
+        self.assertContains(self.client.get(reverse("dashboard")), "100 MB")
+
+    def test_deleted_jobs_are_excluded_from_progress(self):
+        self.client.force_login(self.user)
+        self.job.audio_deleted_at = timezone.now()
+        self.job.save()
+        self.assertEqual(self.client.get(reverse("jobs_status")).json(), {"jobs": []})
+        self.assertEqual(self.client.get(reverse("job_status", args=[self.job.id])).status_code, 404)

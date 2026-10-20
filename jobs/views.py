@@ -7,6 +7,8 @@ from django.core.files.storage import default_storage
 from django.db import transaction
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST
 from .forms import UploadForm
 from .models import AudioJob
@@ -25,7 +27,25 @@ def owned_job(request, pk):
 @login_required
 def dashboard(request):
     jobs = request.user.audio_jobs.filter(audio_deleted_at__isnull=True)
-    return render(request, "jobs/dashboard.html", {"jobs": jobs, "form": UploadForm()})
+    return render(request, "jobs/dashboard.html", {"jobs": jobs, "form": UploadForm(), "max_upload_mb": settings.MAX_UPLOAD_BYTES / (1024 * 1024)})
+
+
+WATCHED_STATUSES = {AudioJob.Status.UPLOADING, AudioJob.Status.VALIDATING, AudioJob.Status.AWAITING_PAYMENT, AudioJob.Status.PAID_QUEUED, AudioJob.Status.PROCESSING}
+
+
+def status_payload(job):
+    return {
+        "id": str(job.id), "status": job.status, "label": job.get_status_display(),
+        "busy": job.status in WATCHED_STATUSES, "version": job.updated_at.isoformat(),
+        "detail_url": reverse("job_detail", args=[job.id]),
+    }
+
+
+@login_required
+@never_cache
+def jobs_status(request):
+    jobs = request.user.audio_jobs.filter(audio_deleted_at__isnull=True)
+    return JsonResponse({"jobs": [status_payload(job) for job in jobs]})
 
 @login_required
 @require_POST
@@ -44,19 +64,22 @@ def upload(request):
     return redirect("job_detail", pk=job.id)
 
 @login_required
+@never_cache
 def job_detail(request, pk):
     job = owned_job(request, pk)
     if job.audio_deleted_at:
         raise Http404
     retry_available = settings.DEV_BYPASS_PAYMENT and not job.audio_deleted_at and job.status in {AudioJob.Status.FAILED, AudioJob.Status.REFUND_PENDING}
-    return render(request, "jobs/detail.html", {"job": job, "dev_bypass_payment": settings.DEV_BYPASS_PAYMENT, "retry_available": retry_available})
+    template = "jobs/_detail.html" if request.GET.get("partial") == "1" else "jobs/detail.html"
+    return render(request, template, {"job": job, "dev_bypass_payment": settings.DEV_BYPASS_PAYMENT, "retry_available": retry_available, "job_state": status_payload(job)})
 
 @login_required
+@never_cache
 def job_status(request, pk):
     job = owned_job(request, pk)
     if job.audio_deleted_at:
         raise Http404
-    return JsonResponse({"status": job.status, "detail_url": f"/pedidos/{job.id}/"})
+    return JsonResponse(status_payload(job))
 
 @login_required
 @require_POST

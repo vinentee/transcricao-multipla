@@ -39,6 +39,12 @@ AUTH_PASSWORD_VALIDATORS = [{"NAME": "django.contrib.auth.password_validation.Us
 LANGUAGE_CODE, TIME_ZONE, USE_I18N, USE_TZ = "pt-br", "America/Sao_Paulo", True, True
 STATIC_URL, STATIC_ROOT = "/static/", BASE_DIR / "staticfiles"
 MEDIA_URL, MEDIA_ROOT = "/media/", BASE_DIR / "media"
+# Static assets are served locally by WhiteNoise in both build and runtime.
+# Keep this independent from R2: Docker builds may not receive S3_ENABLED.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGIN_URL, LOGIN_REDIRECT_URL, LOGOUT_REDIRECT_URL = "login", "dashboard", "login"
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
@@ -61,7 +67,7 @@ if S3_ENABLED:
     AWS_S3_REGION_NAME = os.getenv("S3_REGION", "auto")
     AWS_S3_SIGNATURE_VERSION = "s3v4"
     AWS_DEFAULT_ACL = None
-    STORAGES = {"default": {"BACKEND": "storages.backends.s3.S3Storage"}, "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"}}
+    STORAGES["default"] = {"BACKEND": "storages.backends.s3.S3Storage"}
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-transcribe-diarize")

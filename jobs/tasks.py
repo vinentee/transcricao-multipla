@@ -1,3 +1,5 @@
+import logging
+
 from celery import shared_task
 from django.conf import settings
 from django.core.files.storage import default_storage
@@ -7,26 +9,61 @@ from .models import AudioJob, UsageRecord
 from .providers import OpenAITranscriptionProvider
 from .services import create_quote, inspect_audio, prepared_transcription_chunks, save_provider_segments
 
+logger = logging.getLogger(__name__)
+
 @shared_task(bind=True, autoretry_for=(OSError, TimeoutError), retry_backoff=True, retry_kwargs={"max_retries": 3})
 def validate_job(self, job_id):
     job = AudioJob.objects.get(pk=job_id)
     if job.status != AudioJob.Status.VALIDATING:
         return
     try:
-        job.duration_seconds = inspect_audio(job)
-        job.save(update_fields=["duration_seconds"])
-        create_quote(job)
-        job.transition(AudioJob.Status.QUOTED)
+        duration_seconds = inspect_audio(job)
+        with transaction.atomic():
+            job = AudioJob.objects.select_for_update().get(pk=job_id)
+            if job.status != AudioJob.Status.VALIDATING:
+                return
+            job.duration_seconds = duration_seconds
+            job.save(update_fields=["duration_seconds"])
+            create_quote(job)
+            job.transition(AudioJob.Status.QUOTED)
+        logger.info("Audio validation and quote completed for job %s", job_id)
     except Exception as exc:
-        job.transition(AudioJob.Status.FAILED, str(exc)[:300])
+        with transaction.atomic():
+            job = AudioJob.objects.select_for_update().get(pk=job_id)
+            if job.status == AudioJob.Status.VALIDATING:
+                job.transition(AudioJob.Status.FAILED, str(exc)[:300])
+        logger.exception("Audio validation failed for job %s", job_id)
 
 @shared_task(bind=True, autoretry_for=(OSError, TimeoutError), retry_backoff=True, retry_kwargs={"max_retries": 3})
 def transcribe_job(self, job_id):
     with transaction.atomic():
-        job = AudioJob.objects.select_for_update().get(pk=job_id)
+        job = AudioJob.objects.select_for_update().select_related("quote", "payment").get(pk=job_id)
         if job.status != AudioJob.Status.PAID_QUEUED:
             return
+        if job.audio_deleted_at or not default_storage.exists(job.original_key):
+            job.transition(AudioJob.Status.FAILED, "O áudio original não está disponível para transcrição.")
+            logger.error("Transcription blocked because audio is unavailable for job %s", job_id)
+            return
+        try:
+            quote = job.quote
+        except AudioJob.quote.RelatedObjectDoesNotExist:
+            job.transition(AudioJob.Status.FAILED, "O pedido não possui uma cotação válida.")
+            logger.error("Transcription blocked because quote is missing for job %s", job_id)
+            return
+        try:
+            payment = job.payment
+        except AudioJob.payment.RelatedObjectDoesNotExist:
+            job.transition(AudioJob.Status.FAILED, "O pedido não possui um pagamento confirmado.")
+            logger.error("Transcription blocked because payment is missing for job %s", job_id)
+            return
+        from payments.models import Payment
+        if payment.status != Payment.Status.RECEIVED or payment.amount_brl != quote.total_brl:
+            job.transition(AudioJob.Status.FAILED, "O pagamento do pedido não está confirmado ou diverge da cotação.")
+            logger.error("Transcription blocked because payment is invalid for job %s", job_id)
+            return
+        charged_brl = quote.total_brl
         job.transition(AudioJob.Status.PROCESSING)
+    logger.info("Transcription started for job %s", job_id)
     try:
         all_segments, last_end_ms, input_tokens, output_tokens = [], 0, 0, 0
         with prepared_transcription_chunks(job) as chunks:
@@ -51,8 +88,9 @@ def transcribe_job(self, job_id):
                 if job.can_transition(AudioJob.Status.CANCELLED): job.transition(AudioJob.Status.CANCELLED)
                 return
             save_provider_segments(job, all_segments)
-            UsageRecord.objects.update_or_create(job=job, defaults={"input_tokens": input_tokens, "output_tokens": output_tokens, "charged_brl": job.quote.total_brl})
+            UsageRecord.objects.update_or_create(job=job, defaults={"input_tokens": input_tokens, "output_tokens": output_tokens, "charged_brl": charged_brl})
             job.transition(AudioJob.Status.READY)
+        logger.info("Transcription completed for job %s", job_id)
     except Exception as exc:
         job = AudioJob.objects.get(pk=job_id)
         if settings.DEV_BYPASS_PAYMENT:
@@ -61,6 +99,7 @@ def transcribe_job(self, job_id):
             from payments.tasks import request_refund
             job.transition(AudioJob.Status.REFUND_PENDING, str(exc)[:300])
             request_refund.delay(str(job.id))
+        logger.exception("Transcription failed for job %s", job_id)
         raise
 
 @shared_task

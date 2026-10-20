@@ -44,3 +44,10 @@ class DevelopmentPaymentTests(TestCase):
     def test_bypass_is_hidden_when_disabled(self):
         response=self.client.post(f"/pagamentos/pedidos/{self.job.id}/pagamento-teste/")
         self.assertEqual(response.status_code, 404)
+
+    def test_development_payment_without_quote_returns_400(self):
+        job=AudioJob.objects.create(user=self.user, status=AudioJob.Status.QUOTED, original_key="missing", original_filename="missing.wav")
+        response=self.client.post(f"/pagamentos/pedidos/{job.id}/pagamento-teste/")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"error": "Cotação indisponível ou expirada."})
+        self.assertFalse(Payment.objects.filter(job=job).exists())

@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -7,7 +8,9 @@ from django.utils import timezone
 from django.urls import reverse
 from pricing.models import PricingConfig
 from pricing.services import quote_for_seconds
-from .models import AudioJob, Speaker, TranscriptSegment
+from payments.models import Payment
+from .models import AudioJob, Quote, Speaker, TranscriptSegment, UsageRecord
+from .tasks import transcribe_job, validate_job
 from .views import timestamp
 from .forms import UploadForm
 from .services import ALLOWED_EXTENSIONS
@@ -76,18 +79,52 @@ class PricingAndExportTests(TestCase):
         self.assertEqual(self.client.get(reverse("export", args=[job.id, "pdf"])).status_code, 404)
 
     @override_settings(DEBUG=True, DEV_BYPASS_PAYMENT=True)
-    def test_failed_job_can_be_retried_without_a_new_payment(self):
-        from unittest.mock import patch
-        job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.FAILED, original_key="retry.wav", original_filename="retry.wav", failure_reason="falha")
-        from django.core.files.storage import default_storage
-        default_storage.save(job.original_key, __import__("django").core.files.base.ContentFile(b"audio"))
+    def test_failed_job_without_billing_is_repaired_before_retry(self):
+        job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.FAILED, original_key="retry.wav", original_filename="retry.wav", duration_seconds=60, failure_reason="falha")
         self.client.force_login(self.user)
-        with patch("jobs.tasks.transcribe_job.delay"):
-            response = self.client.post(f"/pedidos/{job.id}/tentar-novamente/")
+        with patch("jobs.views.default_storage.exists", return_value=True), patch("jobs.tasks.transcribe_job.delay") as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(f"/pedidos/{job.id}/tentar-novamente/")
         job.refresh_from_db()
         self.assertEqual(response.status_code, 302)
         self.assertEqual(job.status, AudioJob.Status.PAID_QUEUED)
         self.assertEqual(job.failure_reason, "")
+        self.assertEqual(job.quote.duration_seconds, 60)
+        self.assertEqual(job.quote.total_brl, quote_for_seconds(60, self.config)["total_brl"])
+        self.assertIsNotNone(job.quote.accepted_at)
+        self.assertEqual(job.payment.status, Payment.Status.RECEIVED)
+        self.assertEqual(job.payment.billing_type, "DEVELOPMENT")
+        self.assertEqual(job.payment.amount_brl, job.quote.total_brl)
+        delay.assert_called_once_with(str(job.id))
+
+    @override_settings(DEBUG=True, DEV_BYPASS_PAYMENT=True)
+    def test_retry_without_duration_is_blocked(self):
+        job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.FAILED, original_key="no-duration.wav", original_filename="no-duration.wav")
+        self.client.force_login(self.user)
+        with patch("jobs.views.default_storage.exists", return_value=True), patch("jobs.tasks.transcribe_job.delay") as delay:
+            response = self.client.post(reverse("retry_transcription", args=[job.id]))
+        job.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(job.status, AudioJob.Status.FAILED)
+        self.assertFalse(Quote.objects.filter(job=job).exists())
+        self.assertFalse(Payment.objects.filter(job=job).exists())
+        delay.assert_not_called()
+
+    @override_settings(DEBUG=True, DEV_BYPASS_PAYMENT=True)
+    def test_retry_does_not_overwrite_an_incompatible_payment(self):
+        job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.FAILED, original_key="pending.wav", original_filename="pending.wav", duration_seconds=60)
+        payment = Payment.objects.create(job=job, status=Payment.Status.PENDING, amount_brl="99.00")
+        self.client.force_login(self.user)
+        with patch("jobs.views.default_storage.exists", return_value=True), patch("jobs.tasks.transcribe_job.delay") as delay:
+            response = self.client.post(reverse("retry_transcription", args=[job.id]))
+        job.refresh_from_db()
+        payment.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(job.status, AudioJob.Status.FAILED)
+        self.assertEqual(payment.status, Payment.Status.PENDING)
+        self.assertEqual(payment.amount_brl, Decimal("99.00"))
+        self.assertFalse(Quote.objects.filter(job=job).exists())
+        delay.assert_not_called()
 
     def test_delete_marks_audio_only_after_storage_removal(self):
         from django.core.files.base import ContentFile
@@ -104,3 +141,76 @@ class PricingAndExportTests(TestCase):
         self.assertRedirects(response, reverse("dashboard"))
         self.assertNotContains(self.client.get(reverse("dashboard")), job.original_filename)
         self.assertEqual(self.client.get(reverse("job_detail", args=[job.id])).status_code, 404)
+
+
+@override_settings(DEV_BYPASS_PAYMENT=True)
+class JobTaskTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(email="worker@example.com", password="senha-segura")
+
+    def create_quote(self, job, total="10.00"):
+        return Quote.objects.create(
+            job=job,
+            duration_seconds=job.duration_seconds or 60,
+            total_brl=total,
+            api_brl="1.0000",
+            infra_brl="1.0000",
+            pricing_snapshot={},
+            expires_at=timezone.now() + timezone.timedelta(minutes=30),
+        )
+
+    def test_validation_rolls_back_duration_when_quote_creation_fails(self):
+        job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.VALIDATING, original_key="validation.wav", original_filename="validation.wav")
+        with patch("jobs.tasks.inspect_audio", return_value=60), patch("jobs.tasks.create_quote", side_effect=ValueError("sem preço")):
+            validate_job.run(str(job.id))
+        job.refresh_from_db()
+        self.assertEqual(job.status, AudioJob.Status.FAILED)
+        self.assertIsNone(job.duration_seconds)
+        self.assertFalse(Quote.objects.filter(job=job).exists())
+
+    def test_worker_without_quote_fails_before_calling_openai(self):
+        job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="missing-quote.wav", original_filename="missing-quote.wav", duration_seconds=60)
+        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
+            transcribe_job.run(str(job.id))
+        job.refresh_from_db()
+        self.assertEqual(job.status, AudioJob.Status.FAILED)
+        self.assertIn("cotação", job.failure_reason)
+        provider.assert_not_called()
+
+    def test_worker_without_received_payment_fails_before_calling_openai(self):
+        job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="missing-payment.wav", original_filename="missing-payment.wav", duration_seconds=60)
+        self.create_quote(job)
+        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
+            transcribe_job.run(str(job.id))
+        job.refresh_from_db()
+        self.assertEqual(job.status, AudioJob.Status.FAILED)
+        self.assertIn("pagamento", job.failure_reason)
+        provider.assert_not_called()
+
+    def test_worker_with_payment_amount_mismatch_fails_before_calling_openai(self):
+        job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="wrong-payment.wav", original_filename="wrong-payment.wav", duration_seconds=60)
+        self.create_quote(job, total="10.00")
+        Payment.objects.create(job=job, status=Payment.Status.RECEIVED, amount_brl="9.00")
+        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
+            transcribe_job.run(str(job.id))
+        job.refresh_from_db()
+        self.assertEqual(job.status, AudioJob.Status.FAILED)
+        self.assertIn("diverge", job.failure_reason)
+        provider.assert_not_called()
+
+    def test_successful_worker_records_the_quoted_charge(self):
+        job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="success.wav", original_filename="success.wav", duration_seconds=60)
+        quote = self.create_quote(job, total="12.34")
+        Payment.objects.create(job=job, status=Payment.Status.RECEIVED, amount_brl=quote.total_brl, billing_type="DEVELOPMENT")
+        chunks = MagicMock()
+        chunks.__enter__.return_value = [("/tmp/chunk.m4a", 0)]
+        chunks.__exit__.return_value = False
+        provider_result = {"segments": [{"speaker": "A", "start": 0, "end": 1, "text": "Teste"}], "usage": None}
+        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.prepared_transcription_chunks", return_value=chunks), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
+            provider.return_value.transcribe.return_value = provider_result
+            transcribe_job.run(str(job.id))
+        job.refresh_from_db()
+        usage = UsageRecord.objects.get(job=job)
+        self.assertEqual(job.status, AudioJob.Status.READY)
+        self.assertEqual(usage.charged_brl, Decimal("12.34"))
+        provider.return_value.transcribe.assert_called_once_with("/tmp/chunk.m4a")

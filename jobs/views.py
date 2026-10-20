@@ -1,3 +1,4 @@
+import logging
 import uuid
 from django.conf import settings
 from django.contrib import messages
@@ -9,7 +10,14 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 from .forms import UploadForm
 from .models import AudioJob
+from .services import create_quote
 from .tasks import validate_job
+
+logger = logging.getLogger(__name__)
+
+
+class RetryPreparationError(Exception):
+    pass
 
 def owned_job(request, pk):
     return get_object_or_404(AudioJob, pk=pk, user=request.user)
@@ -75,23 +83,58 @@ def delete_audio(request, pk):
 def retry_transcription(request, pk):
     if not settings.DEV_BYPASS_PAYMENT:
         raise Http404
-    with transaction.atomic():
-        job = get_object_or_404(AudioJob.objects.select_for_update(), pk=pk, user=request.user)
-        if job.status not in {AudioJob.Status.FAILED, AudioJob.Status.REFUND_PENDING}:
-            messages.error(request, "Este pedido não está disponível para nova tentativa.")
-            return redirect("job_detail", pk=pk)
-        if job.audio_deleted_at or not default_storage.exists(job.original_key):
-            messages.error(request, "O áudio original foi excluído e não pode ser reprocessado.")
-            return redirect("job_detail", pk=pk)
-        job.segments.all().delete()
-        job.speakers.all().delete()
-        if hasattr(job, "usage"):
-            job.usage.delete()
-        job.status, job.failure_reason = AudioJob.Status.PAID_QUEUED, ""
-        job.processing_started_at, job.processing_finished_at = None, None
-        job.save(update_fields=["status", "failure_reason", "processing_started_at", "processing_finished_at", "updated_at"])
-        from .tasks import transcribe_job
-        transaction.on_commit(lambda: transcribe_job.delay(str(job.id)))
+    try:
+        with transaction.atomic():
+            job = get_object_or_404(AudioJob.objects.select_for_update(), pk=pk, user=request.user)
+            if job.status not in {AudioJob.Status.FAILED, AudioJob.Status.REFUND_PENDING}:
+                raise RetryPreparationError("Este pedido não está disponível para nova tentativa.")
+            if job.audio_deleted_at or not default_storage.exists(job.original_key):
+                raise RetryPreparationError("O áudio original foi excluído e não pode ser reprocessado.")
+            if not job.duration_seconds:
+                raise RetryPreparationError("A duração do áudio não foi validada. Exclua o pedido e envie o arquivo novamente.")
+
+            from payments.models import Payment
+            from django.utils import timezone
+
+            try:
+                quote = job.quote
+            except AudioJob.quote.RelatedObjectDoesNotExist:
+                try:
+                    quote = create_quote(job)
+                except ValueError as exc:
+                    raise RetryPreparationError(str(exc)) from exc
+
+            payment = Payment.objects.filter(job=job).first()
+            if payment is not None and (
+                payment.status != Payment.Status.RECEIVED or payment.amount_brl != quote.total_brl
+            ):
+                raise RetryPreparationError("Já existe um pagamento incompatível com esta cotação.")
+            if payment is None:
+                payment = Payment.objects.create(
+                    job=job,
+                    amount_brl=quote.total_brl,
+                    status=Payment.Status.RECEIVED,
+                    billing_type="DEVELOPMENT",
+                    remote_id=f"dev_{uuid.uuid4().hex}",
+                )
+            if quote.accepted_at is None:
+                quote.accepted_at = timezone.now()
+                quote.save(update_fields=["accepted_at"])
+
+            job.segments.all().delete()
+            job.speakers.all().delete()
+            if hasattr(job, "usage"):
+                job.usage.delete()
+            job.status, job.failure_reason = AudioJob.Status.PAID_QUEUED, ""
+            job.processing_started_at, job.processing_finished_at = None, None
+            job.save(update_fields=["status", "failure_reason", "processing_started_at", "processing_finished_at", "updated_at"])
+            from .tasks import transcribe_job
+            transaction.on_commit(lambda: transcribe_job.delay(str(job.id)))
+    except RetryPreparationError as exc:
+        logger.warning("Retry blocked for job %s: %s", pk, exc)
+        messages.error(request, str(exc))
+        return redirect("job_detail", pk=pk)
+    logger.info("Retry queued for job %s", pk)
     messages.success(request, "Nova tentativa iniciada.")
     return redirect("job_detail", pk=pk)
 

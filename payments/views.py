@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404, redirect
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
-from jobs.models import AudioJob
+from jobs.models import AudioJob, Quote
 from .models import Payment, WebhookEvent
 from .services import create_payment
 from .tasks import process_webhook_task
@@ -31,17 +31,20 @@ def development_payment(request, job_id):
         job = get_object_or_404(AudioJob.objects.select_for_update(), pk=job_id, user=request.user)
         if job.status == AudioJob.Status.PAID_QUEUED:
             return redirect("job_detail", pk=job.id)
-        if job.status != AudioJob.Status.QUOTED or job.quote.expired:
+        quote = Quote.objects.filter(job=job).first()
+        if job.status != AudioJob.Status.QUOTED or quote is None or quote.expired:
             return JsonResponse({"error": "Cotação indisponível ou expirada."}, status=400)
         payment, created = Payment.objects.get_or_create(
             job=job,
-            defaults={"amount_brl": job.quote.total_brl, "status": Payment.Status.RECEIVED,
+            defaults={"amount_brl": quote.total_brl, "status": Payment.Status.RECEIVED,
                       "billing_type": "DEVELOPMENT", "remote_id": f"dev_{uuid.uuid4().hex}"},
         )
-        if not created and payment.status != Payment.Status.RECEIVED:
+        if not created and (
+            payment.status != Payment.Status.RECEIVED or payment.amount_brl != quote.total_brl
+        ):
             return JsonResponse({"error": "Já existe uma cobrança para este pedido."}, status=409)
-        job.quote.accepted_at = job.quote.accepted_at or timezone.now()
-        job.quote.save(update_fields=["accepted_at"])
+        quote.accepted_at = quote.accepted_at or timezone.now()
+        quote.save(update_fields=["accepted_at"])
         job.transition(AudioJob.Status.AWAITING_PAYMENT)
         job.transition(AudioJob.Status.PAID_QUEUED)
         from jobs.tasks import transcribe_job

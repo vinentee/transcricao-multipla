@@ -1,5 +1,6 @@
 from decimal import Decimal
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.test import override_settings
 from django.utils import timezone
@@ -8,7 +9,17 @@ from pricing.models import PricingConfig
 from pricing.services import quote_for_seconds
 from .models import AudioJob, Speaker, TranscriptSegment
 from .views import timestamp
+from .forms import UploadForm
 from .services import ALLOWED_EXTENSIONS
+
+
+class UploadFormTests(TestCase):
+    @override_settings(MAX_UPLOAD_BYTES=5)
+    def test_file_above_configured_limit_is_rejected(self):
+        form = UploadForm(files={"file": SimpleUploadedFile("large.mp3", b"123456")})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("O limite é", form.errors["file"][0])
 
 class PricingAndExportTests(TestCase):
     def setUp(self):

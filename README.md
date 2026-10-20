@@ -15,7 +15,7 @@ Abra `http://localhost:8000`. Para rodar fora do Docker: crie um ambiente virtua
 
 ### Teste local sem Asaas, R2 ou SMTP
 
-Com `DEBUG=true`, `S3_ENABLED=false`, `DEV_BYPASS_PAYMENT=true` e uma `OPENAI_API_KEY` configurada, execute:
+Com `DEBUG=true`, `ALLOW_SIGNUPS=true`, `S3_ENABLED=false`, `DEV_BYPASS_PAYMENT=true` e uma `OPENAI_API_KEY` configurada, execute:
 
 ```sh
 python manage.py migrate
@@ -35,9 +35,9 @@ O botão **Pagamento de teste** aparece apenas nessas condições e cria uma cob
 ## Railway (publicação rápida)
 
 1. Crie PostgreSQL e Redis gerenciados no projeto Railway e conecte `DATABASE_URL`/`REDIS_URL` aos serviços.
-2. Crie três serviços a partir deste repositório e da mesma imagem: `web` com `gunicorn config.wsgi:application --bind 0.0.0.0:$PORT`, `worker` com `celery -A config worker -l info` e `beat` com `celery -A config beat -l info`.
+2. Para o teste privado, crie dois serviços a partir deste repositório e da mesma imagem: `web` com `gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --timeout 120` e `worker` com `celery -A config worker -l info --concurrency=1`. O `beat` pode ser adicionado depois com `celery -A config beat -l info` quando a limpeza automática e a conciliação real forem necessárias.
 3. Execute `python manage.py migrate` uma vez como comando de release; exponha somente o serviço web e configure `/health/` como health check.
-4. Adicione domínio/TLS, configure `PUBLIC_BASE_URL`, `ALLOWED_HOSTS`, `DEBUG=false` e segredos. Mantenha banco, Redis e R2 privados.
+4. Adicione domínio/TLS, configure `PUBLIC_BASE_URL`, `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `DEBUG=false`, `ALLOW_SIGNUPS=false`, `SECURE_SSL_REDIRECT=true`, `SECURE_HSTS_SECONDS=3600`, `SECURE_HSTS_INCLUDE_SUBDOMAINS=true`, `SECURE_HSTS_PRELOAD=true` e segredos. Para o teste com cobrança mocada, use `DEV_BYPASS_PAYMENT=true`; nunca habilite essa opção na operação comercial. Mantenha banco, Redis e R2 privados.
 5. Configure backup diário do PostgreSQL para storage separado e teste restauração antes de habilitar pagamentos reais.
 
 ## Limites e checklist antes de produção

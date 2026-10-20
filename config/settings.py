@@ -24,7 +24,7 @@ MIDDLEWARE = [
 ]
 ROOT_URLCONF = "config.urls"
 TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates", "DIRS": [BASE_DIR / "templates"], "APP_DIRS": True,
-              "OPTIONS": {"context_processors": ["django.template.context_processors.request", "django.contrib.auth.context_processors.auth", "django.contrib.messages.context_processors.messages"]}}]
+              "OPTIONS": {"context_processors": ["django.template.context_processors.request", "django.contrib.auth.context_processors.auth", "django.contrib.messages.context_processors.messages", "core.context_processors.feature_flags"]}}]
 WSGI_APPLICATION = "config.wsgi.application"
 
 if os.getenv("DATABASE_URL"):
@@ -65,7 +65,8 @@ if S3_ENABLED:
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-transcribe-diarize")
-DEV_BYPASS_PAYMENT = DEBUG and os.getenv("DEV_BYPASS_PAYMENT", "false").lower() == "true"
+DEV_BYPASS_PAYMENT = os.getenv("DEV_BYPASS_PAYMENT", "false").lower() == "true"
+ALLOW_SIGNUPS = os.getenv("ALLOW_SIGNUPS", "true").lower() == "true"
 ASAAS_API_KEY = os.getenv("ASAAS_API_KEY", "")
 ASAAS_WEBHOOK_TOKEN = os.getenv("ASAAS_WEBHOOK_TOKEN", "")
 ASAAS_API_URL = os.getenv("ASAAS_API_URL", "https://api-sandbox.asaas.com/v3")
@@ -75,4 +76,8 @@ MAX_AUDIO_SECONDS = 2 * 60 * 60
 TRANSCRIPTION_CHUNK_SECONDS = int(os.getenv("TRANSCRIPTION_CHUNK_SECONDS", "240"))
 TRANSCRIPTION_OVERLAP_SECONDS = int(os.getenv("TRANSCRIPTION_OVERLAP_SECONDS", "3"))
 SECURE_SSL_REDIRECT = os.getenv("SECURE_SSL_REDIRECT", "false").lower() == "true"
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv("SECURE_HSTS_INCLUDE_SUBDOMAINS", "false").lower() == "true"
+SECURE_HSTS_PRELOAD = os.getenv("SECURE_HSTS_PRELOAD", "false").lower() == "true"
 CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE = not DEBUG

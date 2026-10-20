@@ -4,11 +4,11 @@ from django.utils import timezone
 from pricing.models import PricingConfig
 
 class Command(BaseCommand):
-    help = "Cria uma tabela de preços exclusivamente para desenvolvimento local."
+    help = "Cria uma tabela de preços exclusivamente para o fluxo de pagamento de teste."
 
     def handle(self, *args, **options):
-        if not settings.DEBUG:
-            raise CommandError("A configuração de preços de teste só pode ser criada com DEBUG=true.")
+        if not settings.DEV_BYPASS_PAYMENT:
+            raise CommandError("A configuração de preços de teste exige DEV_BYPASS_PAYMENT=true.")
         existing = PricingConfig.objects.filter(notes__startswith="DESENVOLVIMENTO:", active=True).first()
         if existing:
             self.stdout.write(self.style.WARNING(f"Tabela de teste já existe: {existing.id}"))

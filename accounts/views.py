@@ -1,12 +1,16 @@
 from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.tokens import default_token_generator
+from django.conf import settings
 from django.core.mail import send_mail
+from django.http import Http404
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from .forms import SignupForm
 
 def signup(request):
+    if not settings.ALLOW_SIGNUPS:
+        raise Http404
     if request.method == "POST":
         form = SignupForm(request.POST)
         if form.is_valid():

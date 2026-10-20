@@ -1,0 +1,3 @@
+{% extends 'base.html' %}
+{% block title %}Criar conta · Voz em Texto{% endblock %}
+{% block content %}<section class="simple-auth card"><p class="eyebrow">Comece agora</p><h1>Crie sua conta</h1><p>Tenha todas as suas transcrições organizadas em um só lugar.</p><form class="form-stack" method="post">{% csrf_token %}{{ form.as_p }}<button>Criar conta gratuita</button></form><p class="auth-footer">Já tem uma conta? <a href="{% url 'login' %}">Entrar</a></p></section><style>.simple-auth{max-width:500px;margin:30px auto;padding:38px}.simple-auth h1{font-size:34px}.auth-footer{text-align:center;font-size:14px;margin:22px 0 0}@media(max-width:640px){.simple-auth{padding:26px;margin:0 auto}}</style>{% endblock %}

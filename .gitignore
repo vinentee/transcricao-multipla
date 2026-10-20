@@ -1,6 +1,12 @@
 # Logs
 logs
 *.log
+__pycache__/
+*.py[cod]
+.venv/
+db.sqlite3
+staticfiles/
+media/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

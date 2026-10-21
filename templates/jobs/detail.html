@@ -1,5 +1,5 @@
 {% extends 'base.html' %}
-{% block title %}{{ job.original_filename }} · Voz em Texto{% endblock %}
+{% block title %}{{ job.display_title }} · Voz em Texto{% endblock %}
 {% block content %}
 <div data-job-poll data-status-url="{% url 'job_status' job.id %}" data-detail-url="{% url 'job_detail' job.id %}">
 {% include 'jobs/_detail.html' %}

@@ -9,5 +9,6 @@ urlpatterns = [
     path("pedidos/<uuid:pk>/audio/", views.playback_audio, name="playback_audio"),
     path("pedidos/<uuid:pk>/audio/status/", views.playback_status, name="playback_status"),
     path("pedidos/<uuid:pk>/audio/preparar/", views.request_playback, name="request_playback"),
+    path("pedidos/<uuid:pk>/renomear/", views.rename_job, name="rename_job"),
     path("pedidos/<uuid:pk>/revisao/", views.save_review, name="save_review"),
 ]

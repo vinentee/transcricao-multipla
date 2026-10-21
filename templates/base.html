@@ -16,5 +16,8 @@
   <link rel="stylesheet" href="{% static 'jobs/review.css' %}">
   <script src="{% static 'jobs/progress.js' %}" defer></script>
   <script src="{% static 'jobs/review.js' %}" defer></script>
+  {% if user.is_authenticated %}{% include 'jobs/_rename_dialog.html' %}{% endif %}
+  <link rel="stylesheet" href="{% static 'jobs/rename.css' %}">
+  <script src="{% static 'jobs/rename.js' %}" defer></script>
 </body>
 </html>

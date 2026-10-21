@@ -52,7 +52,7 @@ def build_transcript_pdf(job):
         rightMargin=20 * mm,
         topMargin=28 * mm,
         bottomMargin=23 * mm,
-        title=f"Transcrição - {job.original_filename}",
+        title=f"Transcrição - {job.display_title}",
         author="Voz em Texto",
         pageCompression=0,
     )
@@ -64,10 +64,11 @@ def build_transcript_pdf(job):
 
     created_at = timezone.localtime(job.created_at).strftime("%d/%m/%Y às %H:%M")
     duration = _clock(job.duration_seconds * 1000) if job.duration_seconds else "não informada"
+    job_title = f"<b>Pedido:</b> {escape(job.title)}<br/>" if job.title else ""
     story = [
         Paragraph("Transcrição do áudio", title),
         Paragraph(
-            f"<b>Arquivo:</b> {escape(job.original_filename)}<br/>"
+            job_title + f"<b>Arquivo:</b> {escape(job.original_filename)}<br/>"
             f"<b>Enviado em:</b> {created_at}<br/>"
             f"<b>Duração:</b> {duration}",
             metadata,

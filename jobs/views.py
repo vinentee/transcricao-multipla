@@ -12,7 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST, require_http_methods
-from .forms import UploadForm
+from .forms import UploadForm, RenameJobForm
 from .models import AudioJob, Speaker
 from .services import create_quote
 from .media import delete_media, playback_response
@@ -40,7 +40,7 @@ WATCHED_STATUSES = {AudioJob.Status.UPLOADING, AudioJob.Status.VALIDATING, Audio
 
 def status_payload(job):
     return {
-        "id": str(job.id), "status": job.status, "label": job.get_status_display(),
+        "id": str(job.id), "title": job.display_title, "original_filename": job.original_filename, "status": job.status, "label": job.get_status_display(),
         "busy": job.status in WATCHED_STATUSES, "version": job.updated_at.isoformat(),
         "playback_status": job.playback_status,
         "detail_url": reverse("job_detail", args=[job.id]),
@@ -341,3 +341,28 @@ def playback_audio(request, pk):
         return playback_response(request, job)
     except FileNotFoundError:
         raise Http404 from None
+
+
+@login_required
+@never_cache
+@require_http_methods(["GET", "POST"])
+def rename_job(request, pk):
+    wants_json = "application/json" in request.headers.get("Accept", "")
+    if request.method == "POST":
+        with transaction.atomic():
+            job = get_object_or_404(AudioJob.objects.select_for_update(), pk=pk, user=request.user, audio_deleted_at__isnull=True)
+            form = RenameJobForm(request.POST)
+            if form.is_valid():
+                job.title = form.cleaned_data["title"]
+                job.save(update_fields=["title", "updated_at"])
+                if wants_json:
+                    return JsonResponse(status_payload(job))
+                messages.success(request, "Pedido renomeado.")
+                if request.POST.get("return_to") == "dashboard":
+                    return redirect("dashboard")
+                return redirect("job_detail", pk=job.pk)
+        if wants_json:
+            return JsonResponse({"errors": form.errors.get_json_data()}, status=400)
+        return render(request, "jobs/rename.html", {"job": job, "rename_form": form}, status=400)
+    job = get_object_or_404(AudioJob, pk=pk, user=request.user, audio_deleted_at__isnull=True)
+    return render(request, "jobs/rename.html", {"job": job, "rename_form": RenameJobForm(initial={"title": job.display_title})})

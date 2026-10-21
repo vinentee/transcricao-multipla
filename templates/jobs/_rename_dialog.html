@@ -1,0 +1,13 @@
+<dialog class="rename-dialog" data-rename-dialog aria-labelledby="rename-heading">
+  <form method="post" data-rename-form>
+    {% csrf_token %}
+    <h2 id="rename-heading">Renomear pedido</h2>
+    <p>Escolha um nome para encontrar este pedido com facilidade.</p>
+    <label for="rename-title">Nome do pedido</label>
+    <input id="rename-title" name="title" type="text" maxlength="255" required autocomplete="off" aria-describedby="rename-error">
+    <input type="hidden" name="return_to" value="detail">
+    <p class="rename-error" id="rename-error" data-rename-error role="alert"></p>
+    <div class="rename-actions"><button type="button" class="button secondary" data-cancel-rename>Cancelar</button><button type="submit">Salvar nome</button></div>
+  </form>
+</dialog>
+<p class="rename-feedback" data-rename-feedback role="status" hidden></p>

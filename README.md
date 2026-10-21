@@ -116,3 +116,7 @@ python manage.py compare_transcription --audio /caminho/amostra.wav --output /ca
 Esse comando faz chamadas pagas, exige ambas as chaves, não executa verificação adicional, não altera pedidos e não sobrescreve arquivos existentes. O relatório contém transcrições, pendências, consumo e tempo por provedor e é criado com permissão `0600`. Mantenha-o fora do Git e de diretórios públicos. Pode limitar a comparação com `--providers deepgram` ou `--providers openai`.
 
 Compare amostras do início, meio, final e trechos problemáticos, incluindo 01:18–01:20 do teste original, com uma referência humana. Confira palavras omitidas, inseridas e substituídas, números, idioma, falantes, tempo e custo. A avaliação acústica depende do áudio original e das chaves reais; não é substituída pelos testes automatizados.
+
+### Nome dos pedidos
+
+Use **Renomear** na lista de pedidos ou **Renomear pedido** na revisão. O nome aceita até 255 caracteres e pode ser alterado sem perder edições ainda não salvas. O arquivo original, a transcrição e o preço permanecem preservados. Pedidos existentes continuam exibindo o nome do arquivo até serem renomeados. A migração `jobs.0006_audiojob_title` é aplicada por `python manage.py migrate` no pre-deploy.

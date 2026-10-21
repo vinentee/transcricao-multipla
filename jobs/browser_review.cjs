@@ -9,7 +9,7 @@ const { chromium } = require(process.argv[2]);
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.accept());
-    let mediaState = 'ready', mediaRequests = 0, prepareRequests = 0;
+    let mediaState = 'ready', mediaRequests = 0, prepareRequests = 0, renameRequests = 0;
     const audioBytes = Buffer.from(fixture.audio, 'base64');
     await page.route('**/*', async route => {
       const request = route.request();
@@ -17,6 +17,12 @@ const { chromium } = require(process.argv[2]);
       if (url.pathname.startsWith('/static/jobs/')) {
         const name = url.pathname.split('/').pop();
         return route.fulfill({contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css', body: fs.readFileSync(fixture.root + '/jobs/static/jobs/' + name)});
+      }
+      if (url.pathname === fixture.renameUrl) {
+        renameRequests++;
+        if (renameRequests === 1) return route.fulfill({status: 400, json: {errors: {title: [{message: 'Nome inválido para o teste.'}]}}});
+        assert.ok(request.postData().includes('Reunião revisada'));
+        return route.fulfill({json: {id: fixture.jobId, title: 'Reunião revisada', original_filename: fixture.originalFilename}});
       }
       if (url.pathname === fixture.mediaStatusUrl) return route.fulfill({json: {status: mediaState, url: mediaState === 'ready' ? fixture.mediaUrl : null}});
       if (url.pathname === fixture.prepareUrl) { prepareRequests++; mediaState = 'preparing'; return route.fulfill({status: 202, json: {status: mediaState}}); }
@@ -47,6 +53,19 @@ const { chromium } = require(process.argv[2]);
     const edited = 'Texto editado que deve ser preservado ao mudar os filtros. '.repeat(15);
     await first.locator('textarea').fill(edited);
     assert.ok((await first.locator('textarea').boundingBox()).height > 110);
+    await page.locator('[data-rename-job]').click();
+    await page.locator('[data-rename-dialog] [name=title]').fill('Reunião revisada');
+    await page.locator('[data-rename-dialog] [type=submit]').click();
+    await page.getByText('Nome inválido para o teste.').waitFor();
+    assert.equal(await first.locator('textarea').inputValue(), edited);
+    await page.locator('[data-rename-dialog] [type=submit]').click();
+    await page.waitForFunction(() => !document.querySelector('[data-rename-dialog]').open);
+    assert.equal(await page.locator('h1[data-job-title]').textContent(), 'Reunião revisada');
+    assert.equal(await first.locator('textarea').inputValue(), edited);
+    await page.locator('[data-rename-job]').click();
+    assert.equal(await page.locator('[data-rename-dialog] [name=title]').inputValue(), 'Reunião revisada');
+    await page.locator('[data-cancel-rename]').click();
+    assert.equal(renameRequests, 2);
     await page.locator('[data-review-filter]').selectOption('pending');
     await page.locator('[data-speaker-filter]').selectOption(fixture.secondSpeaker);
     assert.equal(await first.isVisible(), false);

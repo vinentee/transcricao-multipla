@@ -9,3 +9,11 @@ class UploadForm(forms.Form):
             limit_mb = settings.MAX_UPLOAD_BYTES / (1024 * 1024)
             raise forms.ValidationError(f"O limite é {limit_mb:g} MB.")
         return f
+
+
+class RenameJobForm(forms.Form):
+    title = forms.CharField(
+        label="Nome do pedido", max_length=255, strip=True,
+        error_messages={"required": "Informe um nome para o pedido.", "max_length": "O nome pode ter até 255 caracteres."},
+        widget=forms.TextInput(attrs={"maxlength": 255, "autofocus": True}),
+    )

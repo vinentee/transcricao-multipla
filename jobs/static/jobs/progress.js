@@ -89,6 +89,7 @@
         const state = states.get(row.dataset.jobId);
         if (!state) { row.remove(); return; }
         row.dataset.busy = String(state.busy);
+        document.dispatchEvent(new CustomEvent('job-title-updated', {detail: state}));
         const badge = row.querySelector('.status');
         badge.textContent = state.label;
         badge.className = 'status status-' + state.status;

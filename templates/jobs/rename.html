@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block title %}Renomear pedido · Voz em Texto{% endblock %}
+{% block content %}
+<section class="card rename-page">
+  <h1>Renomear pedido</h1>
+  <p>Arquivo original: {{ job.original_filename }}</p>
+  <form method="post">{% csrf_token %}
+    {{ rename_form.as_p }}
+    <div class="rename-actions"><a class="button secondary" href="{% url 'job_detail' job.id %}">Cancelar</a><button type="submit">Salvar nome</button></div>
+  </form>
+</section>
+{% endblock %}

@@ -11,6 +11,7 @@ class AudioJob(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="audio_jobs")
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.UPLOADING)
     created_at = models.DateTimeField(auto_now_add=True); updated_at = models.DateTimeField(auto_now=True)
+    title = models.CharField(max_length=255, blank=True, default="")
     original_key = models.CharField(max_length=512, unique=True); original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=100, blank=True); file_size = models.BigIntegerField(default=0); duration_seconds = models.PositiveIntegerField(null=True, blank=True)
     audio_deleted_at = models.DateTimeField(null=True, blank=True); delete_audio_after = models.DateTimeField(null=True, blank=True)
@@ -25,6 +26,10 @@ class AudioJob(models.Model):
     quality_metadata = models.JSONField(default=dict, blank=True)
     needs_review = models.BooleanField(default=False); failure_reason = models.CharField(max_length=300, blank=True)
     processing_started_at = models.DateTimeField(null=True, blank=True); processing_finished_at = models.DateTimeField(null=True, blank=True)
+    @property
+    def display_title(self):
+        return self.title or self.original_filename
+
     @property
     def review_notices(self):
         from .quality import REVIEW_LABELS, clock

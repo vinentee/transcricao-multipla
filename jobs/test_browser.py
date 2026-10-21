@@ -79,6 +79,7 @@ class ReviewBrowserTests(TestCase):
             audio = base64.b64encode(Path(mp3).read_bytes()).decode()
         result = subprocess.run(["node", str(Path(__file__).with_name("browser_review.cjs")), os.environ["PLAYWRIGHT_MODULE"]], input=json.dumps({
             "root": str(settings.BASE_DIR), "html": html, "detailUrl": url,
+            "renameUrl": reverse("rename_job", args=[job.pk]), "jobId": str(job.pk), "originalFilename": job.original_filename,
             "mediaStatusUrl": reverse("playback_status", args=[job.pk]), "mediaUrl": reverse("playback_audio", args=[job.pk]),
             "prepareUrl": reverse("request_playback", args=[job.pk]), "audio": audio,
             "secondSpeaker": str(second.pk), "firstTextName": f"segment_{segments[0].pk}",

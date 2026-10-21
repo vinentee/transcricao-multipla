@@ -14,8 +14,14 @@ class AudioJob(models.Model):
     original_key = models.CharField(max_length=512, unique=True); original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=100, blank=True); file_size = models.BigIntegerField(default=0); duration_seconds = models.PositiveIntegerField(null=True, blank=True)
     audio_deleted_at = models.DateTimeField(null=True, blank=True); delete_audio_after = models.DateTimeField(null=True, blank=True)
+    review_reasons = models.JSONField(default=list, blank=True)
+    quality_metadata = models.JSONField(default=dict, blank=True)
     needs_review = models.BooleanField(default=False); failure_reason = models.CharField(max_length=300, blank=True)
     processing_started_at = models.DateTimeField(null=True, blank=True); processing_finished_at = models.DateTimeField(null=True, blank=True)
+    @property
+    def review_notices(self):
+        from .quality import REVIEW_LABELS, clock
+        return [{"label": REVIEW_LABELS.get(issue["code"], issue["code"]), "start": clock(issue["start"]), "end": clock(issue["end"])} for issue in self.review_reasons]
     class Meta: ordering = ["-created_at"]
     def can_transition(self, to):
         allowed = {self.Status.UPLOADING:{self.Status.VALIDATING,self.Status.CANCELLED}, self.Status.VALIDATING:{self.Status.QUOTED,self.Status.FAILED,self.Status.CANCELLED}, self.Status.QUOTED:{self.Status.AWAITING_PAYMENT,self.Status.CANCELLED}, self.Status.AWAITING_PAYMENT:{self.Status.PAID_QUEUED,self.Status.CANCELLED,self.Status.REFUND_PENDING}, self.Status.PAID_QUEUED:{self.Status.PROCESSING,self.Status.FAILED,self.Status.REFUND_PENDING,self.Status.CANCELLED}, self.Status.PROCESSING:{self.Status.READY,self.Status.FAILED,self.Status.REFUND_PENDING,self.Status.CANCELLED}, self.Status.REFUND_PENDING:{self.Status.REFUNDED,self.Status.FAILED,self.Status.CANCELLED}}
@@ -46,6 +52,11 @@ class TranscriptSegment(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False); job = models.ForeignKey(AudioJob, on_delete=models.CASCADE, related_name="segments")
     speaker = models.ForeignKey(Speaker, null=True, blank=True, on_delete=models.SET_NULL, related_name="segments")
     ordinal = models.PositiveIntegerField(); start_ms = models.PositiveIntegerField(); end_ms = models.PositiveIntegerField(); raw_text = models.TextField(); revised_text = models.TextField(blank=True); needs_review = models.BooleanField(default=False)
+    review_reasons = models.JSONField(default=list, blank=True)
+    @property
+    def review_labels(self):
+        from .quality import REVIEW_LABELS
+        return [REVIEW_LABELS.get(code, code) for code in self.review_reasons]
     class Meta: ordering = ["ordinal"]; unique_together = [("job", "ordinal")]
     @property
     def text(self): return self.revised_text or self.raw_text

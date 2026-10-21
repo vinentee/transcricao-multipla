@@ -74,13 +74,19 @@ def build_transcript_pdf(job):
         ),
     ]
 
+    if job.needs_review:
+        story.append(Paragraph("<b>REVISÃO PENDENTE:</b> Confira os trechos sinalizados com o áudio original.", metadata))
+        for notice in job.review_notices:
+            story.append(Paragraph(f"{notice['start']} - {notice['end']}: {escape(notice['label'])}", metadata))
+
     for segment in job.segments.select_related("speaker").all():
-        speaker_name = segment.speaker.display_name if segment.speaker else "Falante"
+        speaker_name = segment.speaker.display_name if segment.speaker else "Falante não identificado"
         heading = Paragraph(f"{_clock(segment.start_ms)} - {_clock(segment.end_ms)} &nbsp; {escape(speaker_name)}", speaker)
+        warning = Paragraph("Revisão pendente: " + escape("; ".join(segment.review_labels)), speaker) if segment.needs_review else None
         text = Paragraph(escape(segment.text).replace("\n", "<br/>"), transcript)
         # Keep the segment heading with its first line, while allowing a very
         # long transcript segment to continue naturally onto the next page.
-        story.extend([heading, Spacer(1, 2 * mm), text])
+        story.extend([heading, *([warning] if warning else []), Spacer(1, 2 * mm), text])
 
     document.build(story, onFirstPage=TranscriptCanvas(job.original_filename), onLaterPages=TranscriptCanvas(job.original_filename))
     return buffer.getvalue()

@@ -148,9 +148,10 @@ def retry_transcription(request, pk):
             job.speakers.all().delete()
             if hasattr(job, "usage"):
                 job.usage.delete()
+            job.needs_review, job.review_reasons, job.quality_metadata = False, [], {}
             job.status, job.failure_reason = AudioJob.Status.PAID_QUEUED, ""
             job.processing_started_at, job.processing_finished_at = None, None
-            job.save(update_fields=["status", "failure_reason", "processing_started_at", "processing_finished_at", "updated_at"])
+            job.save(update_fields=["status", "failure_reason", "processing_started_at", "processing_finished_at", "updated_at", "needs_review", "review_reasons", "quality_metadata"])
             from .tasks import transcribe_job
             transaction.on_commit(lambda: transcribe_job.delay(str(job.id)))
     except RetryPreparationError as exc:
@@ -174,10 +175,19 @@ def export(request, pk, fmt):
         raise Http404
     segs = job.segments.select_related("speaker")
     if fmt == "txt":
-        body = "\n".join(f"[{timestamp(s.start_ms)} - {timestamp(s.end_ms)}] {s.speaker.display_name if s.speaker else 'Falante'}: {s.text}" for s in segs)
+        body = "\n".join(f"[{timestamp(s.start_ms)} - {timestamp(s.end_ms)}] {s.speaker.display_name if s.speaker else 'Falante não identificado'}: {'[Revisão pendente] ' if s.needs_review else ''}{s.text}" for s in segs)
+        if job.needs_review:
+            body = "REVISÃO PENDENTE: confira os trechos sinalizados com o áudio original.\n" + "\n".join(f"[{n['start']} - {n['end']}] {n['label']}" for n in job.review_notices) + "\n\n" + body
         content_type = "text/plain"
     elif fmt == "srt":
-        body = "\n\n".join(f"{i}\n{timestamp(s.start_ms)} --> {timestamp(s.end_ms)}\n{s.speaker.display_name if s.speaker else 'Falante'}: {s.text}" for i, s in enumerate(segs, 1))
+        cues = []
+        for i, segment in enumerate(segs, 1):
+            warning = "[Revisão pendente] " if segment.needs_review or (i == 1 and job.needs_review) else ""
+            speaker = segment.speaker.display_name if segment.speaker else "Falante não identificado"
+            cues.append(f"{i}\n{timestamp(segment.start_ms)} --> {timestamp(segment.end_ms)}\n{speaker}: {warning}{segment.text}")
+        if not cues and job.needs_review:
+            cues.append("1\n00:00:00,000 --> 00:00:01,000\n[Revisão pendente: confira o áudio original; nenhum texto disponível.]")
+        body = "\n\n".join(cues)
         content_type = "application/x-subrip"
     elif fmt == "pdf":
         from .pdf import build_transcript_pdf
@@ -204,5 +214,9 @@ def save_review(request, pk):
         if text is not None:
             segment.revised_text = text
             segment.save(update_fields=["revised_text"])
+    if request.POST.get("confirm_quality_review") == "1":
+        job.segments.update(needs_review=False, review_reasons=[])
+        job.needs_review, job.review_reasons = False, []
+        job.save(update_fields=["needs_review", "review_reasons", "updated_at"])
     messages.success(request, "Revisão salva.")
     return redirect("job_detail", pk=pk)

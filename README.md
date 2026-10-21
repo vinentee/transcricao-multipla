@@ -46,3 +46,76 @@ O botão **Pagamento de teste** aparece apenas nessas condições e cria uma cob
 - Os textos legais em `/legal/` são modelos e exigem revisão jurídica/LGPD e identificação do controlador.
 - Valide o webhook externo, conciliação Asaas, estorno, backup/restauração e exclusão de áudio após sete dias no ambiente sandbox antes de trocar chaves reais.
 - A documentação oficial deve ser revisada novamente imediatamente antes da ativação comercial: [OpenAI](https://developers.openai.com/api/docs/guides/speech-to-text), [Asaas](https://docs.asaas.com/docs/sobre-os-webhooks) e [R2](https://developers.cloudflare.com/r2/api/s3/presigned-urls/).
+
+
+## Fidelidade, falantes e revisão de áudios longos
+
+O fluxo envia `TRANSCRIPTION_LANGUAGE=pt` em todas as chamadas do modelo
+`gpt-4o-transcribe-diarize`, sem `prompt` (não suportado pelo modelo).
+`TRANSCRIPTION_CHUNK_SECONDS=240` e `TRANSCRIPTION_OVERLAP_SECONDS=3`
+controlam blocos e contexto nas bordas. A duração precisa ser maior que 10
+segundos e a sobreposição deve ser não negativa e menor que duração menos 10.
+Cada arquivo enviado deve ter menos de 25 MB; aumentos excessivos do bloco são
+rejeitados antes da chamada. A duração máxima do pedido continua sendo duas horas.
+
+O áudio é decodificado uma vez para PCM mono de 16 kHz. `webrtcvad-wheels`
+orienta os cortes, buscando pausas nos dez segundos anteriores ao limite.
+A detecção de voz não remove pausas nem falas baixas: todo o áudio é enviado.
+Cortes e amostras de referência são extraídos do PCM, sem recompressões sucessivas.
+
+A união preserva falas simultâneas. Apenas textos completos equivalentes,
+com tempos próximos e a mesma identidade de voz, são removidos nas
+sobreposições de blocos vizinhos. Versões divergentes são preservadas para
+revisão; não há alinhamento inventado por palavra. Rótulos locais retornados
+pela API não identificam a mesma pessoa automaticamente entre chamadas.
+
+Até quatro amostras de voz de 2 a 10 segundos, sem outra fala sobreposta e
+com pelo menos 1,5 segundo de atividade de voz, são extraídas de trechos sem
+alertas e enviadas como referências nas próximas chamadas. São amostras do
+próprio áudio, processadas pelo mesmo provedor. Nenhuma amostra ou dado base64
+é persistido no banco ou nos logs. Os temporários são removidos ao sair do
+processamento, inclusive em falhas. Falantes que não puderem ser associados
+são apresentados como “Falante não identificado”; suas falas são preservadas.
+O limite de quatro referências não limita a quantidade de falas salvas.
+
+A verificação sinaliza texto vazio, horários inválidos, voz sem texto por
+pelo menos 1,5 segundo, sequências de quatro palavras repetidas quatro vezes
+seguidas e possível mudança para inglês. `langdetect`, com semente fixa,
+avalia passagens de pelo menos 20 palavras e exige probabilidade de inglês
+mínima de 90%. Essas verificações são heurísticas: podem deixar passar erros
+ou sinalizar trechos corretos, especialmente em gravações multilíngues.
+
+Cada bloco suspeito pode ter **uma** chamada adicional, com o mesmo áudio,
+contexto das bordas e referências já disponíveis. A troca exige menos problemas
+detectados e nenhuma perda de cobertura de voz; empate mantém o original.
+Falhas da verificação adicional mantêm o primeiro resultado para revisão.
+No pior caso, todos os blocos terão duas chamadas. O consumo retornado por
+todas as chamadas é somado, sem alterar o preço aceito nem gerar nova cobrança.
+Chamadas que falhem antes de retornar uso podem não ser contabilizadas localmente.
+Não se traduz nem se completa automaticamente o texto produzido.
+
+`AudioJob.review_reasons` guarda códigos e intervalos dos alertas;
+`TranscriptSegment.review_reasons` guarda os códigos do trecho.
+`quality_metadata` registra versão do fluxo, idioma, blocos e novas tentativas.
+O editor e as exportações indicam revisão pendente, inclusive lacunas sem
+segmentos. Na exportação SRT o aviso geral aparece na primeira legenda;
+os intervalos e motivos completos ficam no editor, TXT e PDF.
+Salvar texto editado não remove os alertas. Após conferir o áudio, o usuário
+pode confirmar a conclusão da revisão para limpar as sinalizações.
+
+### Atualização e validação
+
+Instale `requirements.txt`, execute `python manage.py migrate` e reinicie os
+processos web e Celery. A migração acrescenta campos com valores vazios,
+preservando resultados existentes e revisões manuais. Pedidos concluídos não
+são reprocessados automaticamente. As regras de pagamento e estorno não mudam.
+
+Execute `python manage.py test`. A suíte inclui preparação real via FFmpeg,
+limites equivalentes a duas horas, união de bordas, falas simultâneas,
+referências, detecção de idioma, tentativas limitadas, consumo e alertas.
+Os testes usam respostas simuladas da API e não avaliam fidelidade acústica.
+Antes de validar a qualidade em produção, compare com uma transcrição humana
+amostras do início, meio, final e limites dos blocos do áudio de teste, incluindo
+01:18–01:20. Confira palavras omitidas, inseridas, substituídas, valores numéricos,
+identidade dos falantes e mudanças indevidas de idioma. Os detectores não
+representam uma garantia de transcrição perfeita.

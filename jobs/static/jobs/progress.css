@@ -3,3 +3,6 @@
 .order-row[data-busy="true"] .status::before{content:"";display:inline-block;width:10px;height:10px;border:2px solid #b8afff;border-top-color:var(--violet);border-radius:50%;margin-right:6px;animation:job-spin .8s linear infinite}
 @keyframes job-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner,.order-row[data-busy="true"] .status::before{animation:none}}
 @media(max-width:760px){.order-row .status{display:inline-block;white-space:normal;max-width:110px}}
+
+.review-warning{background:#fff8e5;color:#684800;border-left:4px solid #d79915;padding:12px 16px;margin:12px 0}.review-warning span{display:block;font-size:14px;margin-top:4px}.review-warning ul{padding-left:20px}
+.quality-confirm{display:flex;align-items:flex-start;gap:10px;margin:20px 0}.quality-confirm input{width:auto;flex:none;margin-top:4px;padding:0}

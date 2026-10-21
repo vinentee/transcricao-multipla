@@ -6,7 +6,7 @@
     const form = root.querySelector('[data-review-form]');
     const audio = root.querySelector('[data-review-audio]');
     const status = root.querySelector('[data-media-message]');
-    const cards = [...root.querySelectorAll('[data-review-segment]')];
+    let cards = [...root.querySelectorAll('[data-review-segment]')];
     const filter = root.querySelector('[data-review-filter]');
     const speakerFilter = root.querySelector('[data-speaker-filter]');
     const speed = root.querySelector('[data-playback-speed]');
@@ -79,7 +79,38 @@
         if (initialValues.has(name) && initialValues.get(name) === value) event.formData.delete(name);
       }
     });
-    form.addEventListener('submit', () => { dirty = false; });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (root.dataset.saving === 'true') return;
+      const saveState = root.querySelector('[data-save-state]');
+      if (root.querySelector('[data-structure-panel]:not([hidden])')) {
+        saveState.textContent = 'Aplique ou cancele a divisão/novo trecho antes de salvar.';
+        return;
+      }
+      root.dataset.saving = 'true';
+      const button = form.querySelector('[type=submit]');
+      button.disabled = true;
+      const data = new FormData(form);
+      const enabledControls = [...form.elements].filter(element => !element.disabled);
+      enabledControls.forEach(element => { element.disabled = true; });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30000);
+      try {
+        const response = await fetch(form.action, {method: 'POST', credentials: 'same-origin',
+          headers: {Accept: 'application/json'}, body: data, signal: controller.signal});
+        if (response.redirected) throw new Error('Sua sessão expirou. Suas edições continuam nesta página.');
+        if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('Não foi possível salvar. Confira sua conexão e sua sessão; suas edições continuam nesta página.');
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Não foi possível salvar a revisão.');
+        if (!result.redirect) throw new Error('Não foi possível confirmar o salvamento.');
+        dirty = false;
+        window.location.assign(result.redirect);
+      } catch (error) {
+        dirty = true;
+        saveState.textContent = error.name === 'AbortError' ? 'O salvamento demorou. Confira sua conexão e tente novamente; se houver conflito, recarregue somente após copiar suas edições.' : error instanceof TypeError ? 'Falha de conexão. Suas edições continuam nesta página; tente salvar novamente.' : error.message;
+        saveState.setAttribute('role', 'alert');
+      } finally { clearTimeout(timer); root.dataset.saving = 'false'; enabledControls.forEach(element => { element.disabled = false; }); button.disabled = false; }
+    });
     window.addEventListener('beforeunload', event => {
       if (dirty && root.isConnected) { event.preventDefault(); event.returnValue = ''; }
     });
@@ -201,22 +232,37 @@
         audio.load();
       });
     }
-    async function playCard(card) {
+    async function playRange(startMs, endMs, card = null, context = 0) {
       const ticket = ++playbackRequest;
       audio.pause();
-      if (!await prepare() || ticket !== playbackRequest || card.dataset.deleting === 'true') return;
+      if (!await prepare() || ticket !== playbackRequest || card?.dataset.deleting === 'true') return;
       await waitMetadata();
-      if (ticket !== playbackRequest || card.dataset.deleting === 'true') return;
+      if (ticket !== playbackRequest || card?.dataset.deleting === 'true') return;
       const duration = Number.isFinite(audio.duration) ? audio.duration : Number(root.dataset.duration);
-      range = {start: Math.max(0, Number(card.dataset.start) / 1000 - 1), end: Math.min(duration, Number(card.dataset.end) / 1000 + 1)};
+      range = {start: Math.max(0, startMs / 1000 - context), end: Math.min(duration, endMs / 1000 + context)};
       if (range.end <= range.start) throw new Error('O horário deste trecho não corresponde ao áudio disponível.');
       if (currentCard) currentCard.classList.remove('is-playing');
-      currentCard = card; currentCard.classList.add('is-playing');
+      currentCard = card;
+      if (card) card.classList.add('is-playing');
       audio.currentTime = range.start;
       audio.playbackRate = Number(speed.value);
       await audio.play();
-      status.textContent = 'Reproduzindo ' + card.querySelector('.segment-time').textContent + ' com contexto.';
+      status.textContent = card ? 'Reproduzindo ' + card.querySelector('.segment-time').textContent + (context ? ' com contexto.' : '.') : 'Reproduzindo o intervalo selecionado, sem contexto adicional.';
     }
+    async function playCard(card) {
+      return playRange(Number(card.dataset.start), Number(card.dataset.end), card, 1);
+    }
+    root.reviewEditor = {
+      changed, playRange,
+      stop() { ++playbackRequest; audio.pause(); range = null; if (currentCard) currentCard.classList.remove('is-playing'); currentCard = null; },
+      refresh() {
+        cards = [...root.querySelectorAll('[data-review-segment]')];
+        cards.forEach(card => { if (!card.dataset.originalPending) card.dataset.originalPending = card.dataset.pending; });
+        nextIndex = -1;
+        applyFilters();
+        changed();
+      },
+    };
     root.querySelector('[data-prepare-audio]').addEventListener('click', async () => {
       try { await prepare(); } catch (error) { status.textContent = error.message; }
     });

@@ -11,6 +11,7 @@ class AudioJob(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="audio_jobs")
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.UPLOADING)
     created_at = models.DateTimeField(auto_now_add=True); updated_at = models.DateTimeField(auto_now=True)
+    review_version = models.PositiveIntegerField(default=0)
     title = models.CharField(max_length=255, blank=True, default="")
     original_key = models.CharField(max_length=512, unique=True); original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=100, blank=True); file_size = models.BigIntegerField(default=0); duration_seconds = models.PositiveIntegerField(null=True, blank=True)
@@ -64,6 +65,10 @@ class TranscriptSegment(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False); job = models.ForeignKey(AudioJob, on_delete=models.CASCADE, related_name="segments")
     speaker = models.ForeignKey(Speaker, null=True, blank=True, on_delete=models.SET_NULL, related_name="segments")
     ordinal = models.PositiveIntegerField(); start_ms = models.PositiveIntegerField(); end_ms = models.PositiveIntegerField(); raw_text = models.TextField(); revised_text = models.TextField(blank=True); needs_review = models.BooleanField(default=False)
+    source_segments = models.JSONField(default=list, blank=True)
+    origin = models.CharField(max_length=16, default="automatic", choices=[("automatic", "Automático"), ("grouped", "Agrupado"), ("manual", "Manual"), ("split", "Dividido")])
+    parent_segment = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="split_parts")
+    superseded_at = models.DateTimeField(null=True, blank=True)
     provider_label = models.CharField(max_length=100, blank=True)
     speaker_scope = models.CharField(max_length=16, default="global", choices=[("global", "Gravação"), ("local", "Bloco"), ("unknown", "Não identificado")])
     provider_words = models.JSONField(default=list, blank=True)
@@ -76,11 +81,18 @@ class TranscriptSegment(models.Model):
     @property
     def start_clock(self):
         from .quality import clock
-        return clock(self.start_ms / 1000) + (f".{self.start_ms % 1000:03}" if self.end_ms - self.start_ms < 1000 else "")
+        return clock(self.start_ms / 1000) + (f".{self.start_ms % 1000:03}" if self.start_ms % 1000 or self.end_ms - self.start_ms < 1000 else "")
     @property
     def end_clock(self):
         from .quality import clock
-        return clock(self.end_ms / 1000) + (f".{self.end_ms % 1000:03}" if self.end_ms - self.start_ms < 1000 else "")
+        return clock(self.end_ms / 1000) + (f".{self.end_ms % 1000:03}" if self.end_ms % 1000 or self.end_ms - self.start_ms < 1000 else "")
+    @property
+    def review_notices(self):
+        from .paragraphs import segment_issues
+        from .quality import REVIEW_LABELS, clock
+        return [{"start": clock(item["start"]), "end": clock(item["end"]), "label": REVIEW_LABELS.get(code, code)}
+                for item in segment_issues(self) for code in item["review_reasons"]]
+
     @property
     def review_labels(self):
         from .quality import REVIEW_LABELS

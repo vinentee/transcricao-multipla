@@ -29,7 +29,10 @@ def create_quote(job):
     snapshot = {field: str(getattr(c, field)) for field in ("usd_brl","audio_tokens_per_minute","output_tokens_per_minute","input_usd_per_million","output_usd_per_million","infra_brl_per_minute","gateway_fixed_brl","gateway_percent","margin")}
     snapshot.update({"provider": job.transcription_provider, "model": job.transcription_model, "api_usd_per_minute": str(c.api_usd_per_minute), "verification_usd_per_minute": str(c.verification_usd_per_minute)})
     return Quote.objects.create(job=job, duration_seconds=job.duration_seconds, total_brl=calc["total_brl"], api_brl=calc["api_brl"], infra_brl=calc["infra_brl"], pricing_snapshot=snapshot, expires_at=timezone.now()+timedelta(minutes=30))
-def save_provider_segments(job, segments):
+def save_provider_segments(job, segments, group_turns=False):
+    if group_turns:
+        from .paragraphs import group_speaker_turns
+        segments = group_speaker_turns(segments)
     mapping = {}
     for ordinal, item in enumerate(segments, 1):
         label = item.get("speaker")
@@ -48,6 +51,7 @@ def save_provider_segments(job, segments):
             job=job, speaker=mapping.get(label), ordinal=ordinal, start_ms=start, end_ms=end,
             raw_text=item.get("raw_text", item.get("text", "")), corrected_text=item.get("corrected_text", ""),
             provider_label=item.get("provider_label", label or ""), speaker_scope=item.get("speaker_scope", "global" if label is not None else "unknown"),
+            source_segments=item.get("source_segments", []), origin="grouped" if len(item.get("source_segments", [])) > 1 else "automatic",
             provider_words=item.get("words", []), alternatives=item.get("alternatives", []), needs_review=bool(reasons) or item.get("needs_review", False), review_reasons=reasons,
         )
         job.needs_review = job.needs_review or bool(reasons) or item.get("needs_review", False)

@@ -6,6 +6,7 @@ from langdetect import DetectorFactory, LangDetectException, detect_langs
 DetectorFactory.seed = 0
 
 REVIEW_LABELS = {
+    "manual_check": "Confira o trecho editado manualmente com o áudio.",
     "speaker_local": "Falante distinguido neste bloco; associação entre blocos pendente",
     "verification_failed": "Não foi possível verificar novamente este trecho",
     "verification_unavailable": "Verificação adicional indisponível",

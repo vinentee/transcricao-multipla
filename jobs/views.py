@@ -16,6 +16,7 @@ from .forms import UploadForm, RenameJobForm
 from .models import AudioJob, Speaker
 from .services import create_quote
 from .media import delete_media, playback_response
+from .paragraphs import StructureError, validate_structure, apply_structure, segment_issues
 from .quality import collect_issues
 from .providers import require_provider
 from .tasks import validate_job
@@ -79,13 +80,12 @@ def job_detail(request, pk):
         raise Http404
     retry_available = settings.DEV_BYPASS_PAYMENT and not job.audio_deleted_at and job.status in {AudioJob.Status.FAILED, AudioJob.Status.REFUND_PENDING}
     template = "jobs/_detail.html" if request.GET.get("partial") == "1" else "jobs/detail.html"
-    all_segments = list(job.segments.select_related("speaker"))
+    all_segments = list(job.segments.filter(superseded_at__isnull=True).select_related("speaker", "parent_segment"))
     segments = [segment for segment in all_segments if segment.excluded_at is None]
     excluded_segments = [segment for segment in all_segments if segment.excluded_at is not None]
-    intervals = {(segment.start_ms // 1000, segment.end_ms // 1000) for segment in all_segments}
-    legacy_notices = [notice for issue, notice in zip(job.review_reasons, job.review_notices) if (int(issue["start"]), int(issue["end"])) not in intervals]
+    legacy_notices = [notice for issue, notice in zip(job.review_reasons, job.review_notices) if not any(s.start_ms <= round(issue["start"] * 1000) and s.end_ms >= round(issue["end"] * 1000) for s in all_segments)]
     pending_count = sum(segment.needs_review for segment in segments) + len({(notice["start"], notice["end"]) for notice in legacy_notices})
-    return render(request, template, {"job": job, "segments": segments, "excluded_segments": excluded_segments, "pending_count": pending_count,
+    return render(request, template, {"job": job, "segments": segments, "excluded_segments": excluded_segments, "superseded_segments": job.segments.filter(superseded_at__isnull=False).select_related("speaker"), "alignment": {str(s.pk): s.provider_words for s in segments}, "pending_count": pending_count,
                                     "legacy_notices": legacy_notices, "dev_bypass_payment": settings.DEV_BYPASS_PAYMENT,
                                     "retry_available": retry_available, "job_state": status_payload(job)})
 
@@ -192,7 +192,7 @@ def export(request, pk, fmt):
     job = owned_job(request, pk)
     if job.status != AudioJob.Status.READY or job.audio_deleted_at:
         raise Http404
-    segs = job.segments.filter(excluded_at__isnull=True).select_related("speaker")
+    segs = job.segments.filter(excluded_at__isnull=True, superseded_at__isnull=True).select_related("speaker")
     if fmt == "txt":
         body = "\n".join(f"[{timestamp(s.start_ms)} - {timestamp(s.end_ms)}] {s.speaker.display_name if s.speaker else 'Falante não identificado'}: {'[Revisão pendente] ' if s.needs_review else ''}{s.text}" for s in segs)
         if job.needs_review:
@@ -226,13 +226,19 @@ def save_review(request, pk):
         job = get_object_or_404(AudioJob.objects.select_for_update(), pk=pk, user=request.user)
         if job.audio_deleted_at or job.status != AudioJob.Status.READY:
             raise Http404
+        if "review_version" in request.POST and request.POST["review_version"] != str(job.review_version):
+            return JsonResponse({"error": "Esta revisão foi alterada em outra aba. Suas edições foram mantidas aqui; copie-as antes de recarregar a página."}, status=409)
         speakers = {str(speaker.pk): speaker for speaker in job.speakers.all()}
         new_names = {key.removeprefix("new_speaker_"): value.strip() for key, value in request.POST.items() if key.startswith("new_speaker_")}
         import re
         if len(new_names) > 20 or any(not re.fullmatch(r"new_\d+", token) or not name or len(name) > 100 for token, name in new_names.items()):
             return JsonResponse({"error": "Novos falantes inválidos."}, status=400)
+        try:
+            replacements, additions = validate_structure(job, request.POST, set(speakers) | set(new_names))
+        except StructureError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
         # Validate all assignments before saving any edits.
-        for segment in job.segments.all():
+        for segment in job.segments.filter(superseded_at__isnull=True):
             if request.POST.get(f"delete_segment_{segment.pk}") == "1" and request.POST.get(f"restore_segment_{segment.pk}") == "1":
                 return JsonResponse({"error": "Não é possível excluir e restaurar o mesmo trecho ao mesmo tempo."}, status=400)
             key = f"assign_{segment.pk}"
@@ -249,7 +255,7 @@ def save_review(request, pk):
                 speaker.display_name = name.strip()[:100]
                 speaker.save(update_fields=["display_name"])
         confirm_all = request.POST.get("confirm_quality_review") == "1"
-        segments = list(job.segments.all())
+        segments = list(job.segments.filter(superseded_at__isnull=True))
         for segment in segments:
             changed = False
             deleting = request.POST.get(f"delete_segment_{segment.pk}") == "1"
@@ -287,18 +293,24 @@ def save_review(request, pk):
                 changed = True
             if changed:
                 segment.save(update_fields=["excluded_at", "revised_text", "has_manual_revision", "speaker", "speaker_scope", "needs_review", "review_reasons", "reviewed_at"])
+        apply_structure(job, replacements, additions, speakers, confirm_all)
+        segments = list(job.segments.filter(superseded_at__isnull=True))
         if confirm_all:
             job.review_reasons = []
         else:
             # Legacy gap notices without a corresponding segment remain visible.
-            represented = {(s.start_ms, s.end_ms) for s in segments}
+            represented = {(s.start_ms, s.end_ms) for s in job.segments.all()}
+            represented.update((round(item['start'] * 1000), round(item['end'] * 1000)) for s in job.segments.all() for item in s.source_segments)
             gaps = [issue for issue in job.review_reasons if issue["code"] == "missing_speech" and (round(issue["start"] * 1000), round(issue["end"] * 1000)) not in represented]
             job.review_reasons = collect_issues([
-                {"start": s.start_ms / 1000, "end": s.end_ms / 1000, "review_reasons": s.review_reasons}
-                for s in segments if s.needs_review and s.excluded_at is None
+                issue for s in segments if s.needs_review and s.excluded_at is None
+                for issue in segment_issues(s)
             ], gaps)
         job.needs_review = bool(job.review_reasons) or any(s.needs_review for s in segments if s.excluded_at is None)
-        job.save(update_fields=["needs_review", "review_reasons", "updated_at"])
+        job.review_version += 1
+        job.save(update_fields=["needs_review", "review_reasons", "review_version", "updated_at"])
+    if "application/json" in request.headers.get("Accept", ""):
+        return JsonResponse({"redirect": reverse("job_detail", args=[job.pk]), "review_version": job.review_version})
     messages.success(request, "Revisão salva.")
     return redirect("job_detail", pk=pk)
 

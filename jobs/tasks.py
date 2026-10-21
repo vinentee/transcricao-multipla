@@ -78,7 +78,7 @@ def transcribe_job(self, job_id):
             job.review_reasons = result["issues"]
             job.needs_review = bool(result["issues"])
             job.quality_metadata = result["metadata"]
-            save_provider_segments(job, result["segments"])
+            save_provider_segments(job, result["segments"], group_turns=True)
             UsageRecord.objects.update_or_create(job=job, defaults={
                 "input_tokens": input_tokens, "output_tokens": output_tokens, "charged_brl": charged_brl,
                 "provider_usage": result["usage"], "actual_cost_brl": estimate_cost(quote.pricing_snapshot, result["usage"]),

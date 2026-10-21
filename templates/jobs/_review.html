@@ -13,6 +13,8 @@
   </div>
   <form method="post" action="{% url 'save_review' job.id %}" data-review-form>
     {% csrf_token %}
+    <input type="hidden" name="review_version" value="{{ job.review_version }}">
+    {{ alignment|json_script:"review-alignment" }}
     <div class="review-controls">
       <div class="review-player">
         <audio controls preload="none" data-review-audio aria-label="Áudio do pedido"></audio>
@@ -30,6 +32,8 @@
         <button type="button" class="button secondary" data-next-pending>Próxima pendência ↓</button>
       </div>
     </div>
+    <div class="structure-toolbar"><button type="button" class="button secondary" data-add-manual>＋ Novo trecho manual</button><button type="button" class="button secondary" data-undo-structure hidden>Desfazer última alteração estrutural</button></div>
+    {% include 'jobs/_structure_panel.html' %}
     {% if legacy_notices %}<details class="review-notices"><summary>Outros intervalos para conferir</summary><ul>{% for notice in legacy_notices %}<li>{{ notice.start }} - {{ notice.end }}: {{ notice.label }}</li>{% endfor %}</ul></details>{% endif %}
     <details class="speaker-settings"><summary>Editar nomes dos falantes</summary><div class="speaker-fields">{% for speaker in job.speakers.all %}<label>{{ speaker.display_name }}<input name="speaker_{{ speaker.id }}" value="{{ speaker.display_name }}" maxlength="100"></label>{% endfor %}</div><div class="add-speaker"><label class="compact-field">Novo falante<input type="text" data-new-speaker-name maxlength="100" placeholder="Nome ou identificação"></label><button type="button" class="button secondary" data-add-speaker>Adicionar falante</button></div><div data-new-speaker-inputs></div></details>
     <div class="review-segments">
@@ -37,7 +41,7 @@
       <article class="review-segment" id="segment-{{ segment.id }}" data-review-segment
                data-pending="{{ segment.needs_review|yesno:'true,false' }}"
                data-speaker="{{ segment.speaker_id|default:'unknown' }}"
-               data-start="{{ segment.start_ms }}" data-end="{{ segment.end_ms }}">
+               data-segment-id="{{ segment.id }}" data-start="{{ segment.start_ms }}" data-end="{{ segment.end_ms }}">
         <input type="hidden" name="delete_segment_{{ segment.id }}" value="1" data-delete-marker disabled>
         <div class="deletion-notice" data-deletion-notice hidden role="status"><span>Trecho {{ segment.start_clock }} – {{ segment.end_clock }} será excluído ao salvar.</span><button type="button" class="button secondary" data-undo-delete>Desfazer</button></div>
         <div data-segment-body>
@@ -51,16 +55,22 @@
           <span class="segment-time">{{ segment.start_clock }} – {{ segment.end_clock }}</span>
           <button type="button" class="button secondary listen-button" data-listen>▶ Ouvir trecho</button>
           {% if segment.needs_review %}<span class="review-badge">Revisão pendente</span>{% endif %}
+          <button type="button" class="button secondary split-segment" data-split>Dividir</button>
           <button type="button" class="delete-segment" data-delete-segment aria-label="Excluir trecho de {{ segment.start_clock }}">Excluir trecho</button>
         </header>
         <label class="sr-only" for="text-{{ segment.id }}">Transcrição de {{ segment.start_clock }}</label>
         <textarea id="text-{{ segment.id }}" name="segment_{{ segment.id }}" data-transcript rows="3" placeholder="Confira o áudio e escreva o trecho que falta.">{{ segment.text }}</textarea>
         {% if segment.needs_review %}
         <div class="segment-review-actions">
-          <details class="segment-reasons"><summary>Ver motivos da revisão</summary><ul>{% for label in segment.review_labels %}<li>{{ label }}</li>{% empty %}<li>Confira este trecho com o áudio original.</li>{% endfor %}</ul></details>
+          <details class="segment-reasons"><summary>Ver motivos da revisão</summary><ul>{% for notice in segment.review_notices %}<li>{{ notice.start }} – {{ notice.end }}: {{ notice.label }}</li>{% empty %}<li>Confira este trecho com o áudio original.</li>{% endfor %}</ul></details>
           <label class="quality-confirm compact-check"><input type="checkbox" name="reviewed_{{ segment.id }}" value="1" data-reviewed> Trecho conferido</label>
         </div>
         {% endif %}
+        {% if segment.source_segments %}
+        <details class="segment-alternatives"><summary>Trechos e versões de origem</summary>
+          {% for source in segment.source_segments %}<div class="alternative"><p class="alternative-label">{{ source.start|floatformat:3 }}s – {{ source.end|floatformat:3 }}s</p><p class="alternative-text">{% if source.raw_text %}{{ source.raw_text }}{% else %}{{ source.text|default:"" }}{% endif %}</p>{% if source.corrected_text %}<p class="alternative-label">Correção automática</p><p class="alternative-text">{{ source.corrected_text }}</p>{% endif %}{% for alternative in source.alternatives %}<p class="alternative-label">Verificação</p><p class="alternative-text">{{ alternative.text }}</p>{% endfor %}</div>{% endfor %}
+        </details>{% endif %}
+        {% if segment.parent_segment %}<details class="segment-alternatives"><summary>Origem desta divisão</summary><p>Parte do trecho {{ segment.parent_segment.start_clock }} – {{ segment.parent_segment.end_clock }}. A versão completa permanece no histórico de divisões.</p></details>{% endif %}
         {% if segment.alternatives or segment.corrected_text %}
         <details class="segment-alternatives"><summary>Comparar versões da transcrição</summary>
           <p class="alternative-label">Primeira transcrição</p><p class="alternative-text">{{ segment.raw_text|default:'Sem texto retornado.' }}</p>
@@ -79,10 +89,11 @@
       {% for segment in excluded_segments %}<article class="excluded-segment">
         <strong>{{ segment.start_clock }} – {{ segment.end_clock }} · {{ segment.speaker.display_name|default:'Falante não identificado' }}</strong>
         <p>{{ segment.text|default:'Trecho sem texto.' }}</p>
-        <label class="quality-confirm compact-check"><input type="checkbox" name="restore_segment_{{ segment.id }}" value="1"> Restaurar este trecho ao salvar</label>
+        <label class="quality-confirm compact-check"><input type="checkbox" name="restore_segment_{{ segment.id }}" value="1" data-start="{{ segment.start_ms }}" data-end="{{ segment.end_ms }}"> Restaurar este trecho ao salvar</label>
       </article>{% endfor %}
     </details>
     {% endif %}
+    {% if superseded_segments %}<details class="excluded-segments"><summary>Histórico de divisões ({{ superseded_segments|length }})</summary>{% for segment in superseded_segments %}<article class="excluded-segment"><strong>{{ segment.start_clock }} – {{ segment.end_clock }} · {{ segment.speaker.display_name|default:'Falante não identificado' }}</strong><p>{{ segment.text }}</p><details><summary>Primeira transcrição</summary><p>{{ segment.raw_text|default:'Trecho de origem manual.' }}</p></details></article>{% endfor %}</details>{% endif %}
     {% if job.needs_review %}<details class="review-completion"><summary>Concluir todas as pendências</summary><label class="quality-confirm compact-check"><input type="checkbox" name="confirm_quality_review" value="1"> Conferi todos os trechos com o áudio e concluí a revisão.</label></details>{% endif %}
     <footer class="review-save-bar">
       <span data-save-state role="status">Alterações salvas.</span>

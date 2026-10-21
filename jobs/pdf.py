@@ -75,7 +75,7 @@ def build_transcript_pdf(job):
         ),
     ]
 
-    segments = list(job.segments.filter(excluded_at__isnull=True).select_related("speaker").all())
+    segments = list(job.segments.filter(excluded_at__isnull=True, superseded_at__isnull=True).select_related("speaker").all())
     if job.needs_review:
         count = sum(segment.needs_review for segment in segments)
         story.append(Paragraph(f"<b>REVISÃO PENDENTE:</b> {count} trecho(s) sinalizado(s). Confira os motivos junto ao texto e consulte o áudio original.", metadata))

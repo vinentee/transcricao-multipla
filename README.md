@@ -120,3 +120,17 @@ Compare amostras do início, meio, final e trechos problemáticos, incluindo 01:
 ### Nome dos pedidos
 
 Use **Renomear** na lista de pedidos ou **Renomear pedido** na revisão. O nome aceita até 255 caracteres e pode ser alterado sem perder edições ainda não salvas. O arquivo original, a transcrição e o preço permanecem preservados. Pedidos existentes continuam exibindo o nome do arquivo até serem renomeados. A migração `jobs.0006_audiojob_title` é aplicada por `python manage.py migrate` no pre-deploy.
+
+### Parágrafos por falante e edição de trechos
+
+Novas transcrições unem falas consecutivas com a mesma identidade confirmada em um único parágrafo, inclusive quando há pausas. Intervenções de outra pessoa, identidades incertas e sobreposições impedem a união. A etapa acontece depois das verificações de qualidade, sem chamadas adicionais às APIs. Os segmentos e versões de origem ficam preservados para consulta. Pedidos existentes não são reorganizados nem reprocessados.
+
+No editor, posicione o cursor no texto e clique em **Dividir**, ou selecione palavras para separá-las em até três partes. Confira o texto e o falante de cada parte e marque os cortes pelo player ou pelos horários `hh:mm:ss.mmm`. Os horários só são sugeridos quando o texto corresponde às palavras alinhadas pelo provedor; texto corrigido sem alinhamento exige marcação manual. **Ouvir esta parte** reproduz o intervalo exato, sem o segundo de contexto usado no botão normal **Ouvir trecho**. Confirme os horários e aplique ao rascunho.
+
+Use **Novo trecho manual** para incluir uma fala omitida, escolhendo início, fim, texto e falante. Uma sobreposição mostra os intervalos conflitantes e exige confirmação. É possível adicionar falantes durante essa edição. As partes divididas cobrem exatamente o intervalo original; o novo trecho manual pode registrar uma intervenção simultânea.
+
+As alterações só são gravadas em **Salvar revisão**. É possível cancelar o painel ou desfazer as alterações estruturais, da última para a primeira, antes de salvar. Desfazer uma divisão descarta as edições feitas nas partes criadas por ela e recupera o cartão anterior; edições de outros cartões são mantidas. O histórico das divisões permanece separado dos trechos excluídos. Divisões manuais não são reunidas automaticamente. TXT, SRT e PDF incluem apenas as partes ativas. Novos trechos manuais ficam pendentes até confirmação explícita da revisão.
+
+A revisão usa controle de versão: se outra aba salvar primeiro, a segunda recebe um aviso e mantém o rascunho aberto. Copie suas edições antes de recarregar. Erros de rede ou validação também preservam o rascunho nesta página; ele não é um backup persistente no navegador.
+
+Para publicar, atualize web e worker com a mesma versão e aplique `python manage.py migrate --noinput` antes de iniciá-los. A migração `jobs.0007` acrescenta proveniência, origem, vínculo/histórico de divisões e versão de revisão, sem alterar textos, preços ou pagamentos existentes. Não são necessárias variáveis de ambiente adicionais.

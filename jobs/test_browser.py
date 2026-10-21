@@ -68,6 +68,8 @@ class ReviewBrowserTests(TestCase):
             start = 2000 + index * 4000
             segments.append(TranscriptSegment.objects.create(job=job, speaker=first if index % 2 == 0 else second, ordinal=index + 1, start_ms=start, end_ms=start + 2000,
                 raw_text="Vamos conferir como o texto e os falantes aparecem nesta conversa.", needs_review=index % 2 == 0, review_reasons=["english", "verification_unresolved"] if index % 2 == 0 else []))
+        segments[0].provider_words = [{"punctuated_word": word, "start": 2 + index / 10, "end": 2 + (index + 1) / 10} for index, word in enumerate(segments[0].raw_text.split())]
+        segments[0].save(update_fields=["provider_words"])
         job.review_reasons = [{"code": code, "start": s.start_ms / 1000, "end": s.end_ms / 1000} for s in segments for code in s.review_reasons]
         job.save()
         url = reverse("job_detail", args=[job.pk])
@@ -82,6 +84,6 @@ class ReviewBrowserTests(TestCase):
             "renameUrl": reverse("rename_job", args=[job.pk]), "jobId": str(job.pk), "originalFilename": job.original_filename,
             "mediaStatusUrl": reverse("playback_status", args=[job.pk]), "mediaUrl": reverse("playback_audio", args=[job.pk]),
             "prepareUrl": reverse("request_playback", args=[job.pk]), "audio": audio,
-            "secondSpeaker": str(second.pk), "firstTextName": f"segment_{segments[0].pk}",
+            "secondSpeaker": str(second.pk), "firstTextName": f"segment_{segments[0].pk}", "segmentText": segments[0].raw_text, "saveUrl": reverse("save_review", args=[job.pk]),
         }), text=True, capture_output=True, timeout=90)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

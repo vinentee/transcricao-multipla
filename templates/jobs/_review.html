@@ -1,0 +1,76 @@
+<section class="card editor review-editor" data-review-editor
+         data-duration="{{ job.duration_seconds|default:0 }}" data-pending-total="{{ pending_count }}"
+         data-media-status="{{ job.playback_status }}"
+         data-media-status-url="{% url 'playback_status' job.id %}"
+         data-media-prepare-url="{% url 'request_playback' job.id %}">
+  <div class="editor-head">
+    <div><p class="eyebrow">Resultado pronto</p><h2>Revise sua transcrição</h2><p class="review-subtitle">Ouça, confira e ajuste cada trecho.</p></div>
+    <div class="downloads" aria-label="Exportar transcrição">
+      <a class="button secondary" href="{% url 'export' job.id 'txt' %}">TXT</a>
+      <a class="button secondary" href="{% url 'export' job.id 'srt' %}">SRT</a>
+      <a class="button secondary" href="{% url 'export' job.id 'pdf' %}">PDF</a>
+    </div>
+  </div>
+  <form method="post" action="{% url 'save_review' job.id %}" data-review-form>
+    {% csrf_token %}
+    <div class="review-controls">
+      <div class="review-player">
+        <audio controls preload="none" data-review-audio aria-label="Áudio do pedido"></audio>
+        <label class="compact-field">Velocidade
+          <select data-playback-speed aria-label="Velocidade de reprodução"><option value="0.75">0,75×</option><option value="1" selected>1×</option><option value="1.25">1,25×</option></select>
+        </label>
+        <label class="quality-confirm compact-check"><input type="checkbox" data-repeat> Repetir trecho</label>
+        <button type="button" class="secondary button" data-prepare-audio>{% if job.playback_status == 'ready' %}Carregar áudio{% elif job.playback_status == 'preparing' %}Verificar preparação{% else %}Preparar áudio{% endif %}</button>
+      </div>
+      <p class="media-message" data-media-message role="status">{% if job.playback_status == 'preparing' %}Preparando áudio para reprodução…{% elif job.playback_status == 'failed' %}Áudio indisponível. Você pode tentar prepará-lo novamente.{% else %}Use “Ouvir trecho” para reproduzir com um segundo de contexto nas bordas.{% endif %}</p>
+      <div class="review-filters">
+        <span class="pending-summary" data-pending-summary>{{ pending_count }} trecho{{ pending_count|pluralize:"s" }} para revisar</span>
+        <label class="compact-field">Exibir<select data-review-filter><option value="all">Todos</option><option value="pending">Com pendências</option></select></label>
+        <label class="compact-field">Falante<select data-speaker-filter><option value="all">Todos os falantes</option><option value="unknown">Não identificado</option>{% for speaker in job.speakers.all %}<option value="{{ speaker.id }}">{{ speaker.display_name }}</option>{% endfor %}</select></label>
+        <button type="button" class="button secondary" data-next-pending>Próxima pendência ↓</button>
+      </div>
+    </div>
+    {% if legacy_notices %}<details class="review-notices"><summary>Outros intervalos para conferir</summary><ul>{% for notice in legacy_notices %}<li>{{ notice.start }} - {{ notice.end }}: {{ notice.label }}</li>{% endfor %}</ul></details>{% endif %}
+    <details class="speaker-settings"><summary>Editar nomes dos falantes</summary><div class="speaker-fields">{% for speaker in job.speakers.all %}<label>{{ speaker.display_name }}<input name="speaker_{{ speaker.id }}" value="{{ speaker.display_name }}" maxlength="100"></label>{% endfor %}</div><div class="add-speaker"><label class="compact-field">Novo falante<input type="text" data-new-speaker-name maxlength="100" placeholder="Nome ou identificação"></label><button type="button" class="button secondary" data-add-speaker>Adicionar falante</button></div><div data-new-speaker-inputs></div></details>
+    <div class="review-segments">
+      {% for segment in segments %}
+      <article class="review-segment" id="segment-{{ segment.id }}" data-review-segment
+               data-pending="{{ segment.needs_review|yesno:'true,false' }}"
+               data-speaker="{{ segment.speaker_id|default:'unknown' }}"
+               data-start="{{ segment.start_ms }}" data-end="{{ segment.end_ms }}">
+        <header class="segment-header">
+          <label class="segment-speaker"><span class="sr-only">Falante deste trecho</span>
+            <select name="assign_{{ segment.id }}" aria-label="Falante de {{ segment.start_clock }}">
+              <option value="" {% if not segment.speaker_id %}selected{% endif %}>Falante não identificado</option>
+              {% for speaker in job.speakers.all %}<option value="{{ speaker.id }}" {% if speaker.id == segment.speaker_id %}selected{% endif %}>{{ speaker.display_name }}</option>{% endfor %}
+            </select>
+          </label>
+          <span class="segment-time">{{ segment.start_clock }} – {{ segment.end_clock }}</span>
+          <button type="button" class="button secondary listen-button" data-listen>▶ Ouvir trecho</button>
+          {% if segment.needs_review %}<span class="review-badge">Revisão pendente</span>{% endif %}
+        </header>
+        <label class="sr-only" for="text-{{ segment.id }}">Transcrição de {{ segment.start_clock }}</label>
+        <textarea id="text-{{ segment.id }}" name="segment_{{ segment.id }}" data-transcript rows="3" placeholder="Confira o áudio e escreva o trecho que falta.">{{ segment.text }}</textarea>
+        {% if segment.needs_review %}
+        <div class="segment-review-actions">
+          <details class="segment-reasons"><summary>Ver motivos da revisão</summary><ul>{% for label in segment.review_labels %}<li>{{ label }}</li>{% empty %}<li>Confira este trecho com o áudio original.</li>{% endfor %}</ul></details>
+          <label class="quality-confirm compact-check"><input type="checkbox" name="reviewed_{{ segment.id }}" value="1" data-reviewed> Trecho conferido</label>
+        </div>
+        {% endif %}
+        {% if segment.alternatives or segment.corrected_text %}
+        <details class="segment-alternatives"><summary>Comparar versões da transcrição</summary>
+          <p class="alternative-label">Primeira transcrição</p><p class="alternative-text">{{ segment.raw_text|default:'Sem texto retornado.' }}</p>
+          {% for alternative in segment.alternatives %}<div class="alternative"><p class="alternative-label">Verificação{% if alternative.applied %} · aplicada automaticamente{% endif %}</p><p class="alternative-text" data-alternative-text>{{ alternative.text|default:'Nenhum texto retornado.' }}</p>{% if alternative.text %}<button type="button" class="button secondary" data-use-alternative>Usar esta versão</button>{% endif %}</div>{% endfor %}
+        </details>
+        {% endif %}
+      </article>
+      {% empty %}<p>Não há segmentos disponíveis. Confira os avisos e o áudio original.</p>{% endfor %}
+    </div>
+    <p data-no-matches hidden>Nenhum trecho corresponde aos filtros selecionados.</p>
+    {% if job.needs_review %}<details class="review-completion"><summary>Concluir todas as pendências</summary><label class="quality-confirm compact-check"><input type="checkbox" name="confirm_quality_review" value="1"> Conferi todos os trechos com o áudio e concluí a revisão.</label></details>{% endif %}
+    <footer class="review-save-bar">
+      <span data-save-state role="status">Alterações salvas.</span>
+      <button type="submit">Salvar revisão</button>
+    </footer>
+  </form>
+</section>

@@ -10,7 +10,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from .audio import AudioChunk, SpeakerReferences, boundaries, cut_pcm, prepare_chunks, voice_intervals
+from .audio import AudioChunk, PreparedAudio, SpeakerReferences, boundaries, cut_pcm, prepare_chunks, voice_intervals
 from .models import AudioJob, Quote
 from .providers import OpenAITranscriptionProvider
 from .quality import assess, choose_retry, merge_chunks
@@ -158,8 +158,8 @@ class QualityTests(SimpleTestCase):
                 # No source/reference available: raw A is not voice_1.
                 unknown = [segment()]
                 refs.identify(unknown, AudioChunk(path, 0, 5), allow_new=False)
-                self.assertIsNone(unknown[0]["speaker"])
-                self.assertIn("unknown_speaker", unknown[0]["review_reasons"])
+                self.assertEqual(unknown[0]["speaker"], "block_0:A")
+                self.assertIn("speaker_local", unknown[0]["review_reasons"])
             self.assertFalse(refs.references)
             self.assertEqual(os.listdir(directory), ["source.wav"])
 
@@ -184,85 +184,76 @@ class QualityTests(SimpleTestCase):
             refs.identify(many, chunk)
             self.assertEqual(len(refs.references), 4)
             self.assertEqual(len(many), 6)
-            self.assertIsNone(many[-1]["speaker"])
+            self.assertEqual(many[-1]["speaker"], "block_0:5")
 
 
-@override_settings(DEV_BYPASS_PAYMENT=True)
+@override_settings(DEV_BYPASS_PAYMENT=True, OPENAI_API_KEY="test-key")
 class QualityIntegrationTests(TestCase):
     def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = os.path.join(self.directory.name, "source.wav")
+        write_wave(self.path, 100)
         self.user = get_user_model().objects.create_user(email="quality@example.com", password="safe-test-password")
-        self.job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="quality.wav", original_filename="quality.wav", duration_seconds=10)
-        quote = Quote.objects.create(job=self.job, duration_seconds=10, total_brl="10", api_brl="1", infra_brl="1", pricing_snapshot={}, expires_at=timezone.now() + timezone.timedelta(minutes=30))
+        self.job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="quality.wav", original_filename="quality.wav", duration_seconds=100,
+                                          transcription_provider="deepgram", transcription_model="nova-3", transcription_language="pt-BR")
+        quote = Quote.objects.create(job=self.job, duration_seconds=100, total_brl="10", api_brl="1", infra_brl="1", pricing_snapshot={}, expires_at=timezone.now() + timezone.timedelta(minutes=30))
         Payment.objects.create(job=self.job, status=Payment.Status.RECEIVED, amount_brl=quote.total_brl)
 
-    def run_worker(self, results):
-        chunks = MagicMock()
-        chunks.__enter__.return_value = [AudioChunk("/tmp/mocked.wav", 0, 10, [(0, 3)])]
-        with patch("jobs.tasks.prepared_transcription_chunks", return_value=chunks), patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
-            provider.return_value.transcribe.side_effect = results
+    def run_worker(self, primary, verification=()):
+        prepared = MagicMock()
+        prepared.__enter__.return_value = PreparedAudio(self.path, 100, [(0, 2), (10, 12)])
+        with patch("jobs.pipeline.prepare_audio", return_value=prepared), patch("jobs.pipeline.build_playback"), patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.pipeline.DeepgramTranscriptionProvider") as provider, patch("jobs.pipeline.OpenAIVerificationProvider") as verifier:
+            provider.return_value.transcribe.return_value = primary
+            verifier.return_value.transcribe.side_effect = verification
             transcribe_job.run(str(self.job.id))
             self.job.refresh_from_db()
-            return provider.return_value.transcribe.call_count
+            return verifier.return_value.transcribe.call_count
 
-    def test_retry_wins_usage_accumulates_charge_unchanged(self):
-        bad = {"segments": [segment("vamos conversar sobre isso " * 4)], "usage": {"input_tokens": 10, "output_tokens": 20}}
-        good = {"segments": [segment()], "usage": SimpleNamespace(input_tokens=11, output_tokens=12)}
-        self.assertEqual(self.run_worker([bad, good]), 2)
-        self.assertEqual(self.job.status, AudioJob.Status.READY)
-        self.assertEqual(self.job.segments.get().raw_text, "Olá, como você está?")
-        self.assertEqual(self.job.usage.input_tokens, 21)
-        self.assertEqual(self.job.usage.output_tokens, 32)
+    def primary(self):
+        return {"segments": [segment("Thank you.", 0, 2, 0), segment("Olá, como você está?", 10, 12, 1)], "usage": {"seconds": 100}}
+
+    def test_verification_corrects_english_preserves_original_and_charge(self):
+        self.assertEqual(self.run_worker(self.primary(), [{"text": "Obrigado.", "usage": {"input_tokens": 11, "output_tokens": 12}}]), 1)
+        saved = self.job.segments.first()
+        self.assertEqual(saved.raw_text, "Thank you.")
+        self.assertEqual(saved.text, "Obrigado.")
+        self.assertEqual(saved.speaker.provider_label, "0")
+        self.assertFalse(saved.needs_review)
+        self.assertTrue(saved.alternatives[0]["applied"])
+        self.assertEqual(self.job.usage.input_tokens, 11)
         self.assertEqual(self.job.usage.charged_brl, 10)
-        self.assertEqual(self.job.quality_metadata["retries"], 1)
+        self.assertEqual(self.job.quality_metadata["verification"]["seconds"], 2)
 
-    def test_retry_failure_preserves_original_and_flags_review(self):
-        result = {"segments": [segment("vamos conversar sobre isso " * 4)]}
-        self.assertEqual(self.run_worker([result, TimeoutError("provider failure")]), 2)
+    def test_verification_failure_does_not_poison_other_segments_or_speakers(self):
+        self.assertEqual(self.run_worker(self.primary(), [TimeoutError("private error")]), 1)
         self.assertEqual(self.job.status, AudioJob.Status.READY)
-        self.assertIn("retry_failed", self.job.segments.get().review_reasons)
-        self.assertTrue(self.job.needs_review)
+        first, second = self.job.segments.all()
+        self.assertIn("verification_failed", first.review_reasons)
+        self.assertFalse(second.needs_review)
+        self.assertEqual(self.job.speakers.count(), 2)
 
-    def test_tied_retry_is_limited_to_one_and_no_false_speaker_identity(self):
-        result = {"segments": [segment("vamos conversar sobre isso " * 4)]}
-        self.assertEqual(self.run_worker([result, result]), 2)
-        saved = self.job.segments.get()
-        self.assertIsNone(saved.speaker)
-        self.assertIn("retry_unresolved", saved.review_reasons)
-        self.assertEqual(saved.raw_text, result["segments"][0]["text"])
+    def test_overlap_stores_alternative_without_applying_it(self):
+        primary = self.primary()
+        primary["segments"][1].update(start=0, end=2)
+        self.run_worker(primary, [{"text": "Obrigado."}])
+        saved = self.job.segments.first()
+        self.assertFalse(saved.alternatives[0]["applied"])
+        self.assertEqual(saved.text, "Thank you.")
+        self.assertIn("verification_unresolved", saved.review_reasons)
 
-    def test_followup_calls_receive_references_and_sum_duration_usage(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "source.wav")
-            write_wave(path, 10)
-            chunks = MagicMock()
-            chunks.__enter__.return_value = [AudioChunk(path, 0, 6, [(0, 3)], path), AudioChunk(path, 3, 7, [(0, 3)], path)]
-            with patch("jobs.tasks.prepared_transcription_chunks", return_value=chunks), patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
-                provider.return_value.transcribe.side_effect = [
-                    {"segments": [segment()], "usage": {"seconds": 6}},
-                    {"segments": [segment(speaker="voice_1")], "usage": {"seconds": 7}},
-                ]
-                transcribe_job.run(str(self.job.id))
-                self.assertEqual(provider.return_value.transcribe.call_count, 2)
-                known = provider.return_value.transcribe.call_args.kwargs["known_speakers"]
-                self.assertEqual(known["known_speaker_names"], ["voice_1"])
-            self.job.refresh_from_db()
-            self.assertEqual(self.job.speakers.count(), 1)
-            self.assertEqual(self.job.segments.count(), 2)
-            self.assertFalse(self.job.needs_review)
-            self.assertEqual(self.job.quality_metadata["provider_audio_seconds"], 13)
-
-    def test_speaker_limit_does_not_discard_text(self):
-        many = [segment(start=i, end=i + 1, speaker=f"voice_{i}") for i in range(6)]
-        save_provider_segments(self.job, many)
-        self.assertEqual(self.job.segments.count(), 6)
-        self.assertEqual(self.job.speakers.count(), 6)
+    @override_settings(OPENAI_API_KEY="")
+    def test_missing_verification_key_keeps_main_result(self):
+        self.assertEqual(self.run_worker(self.primary()), 0)
+        self.assertEqual(self.job.status, AudioJob.Status.READY)
+        self.assertIn("verification_unavailable", self.job.segments.first().review_reasons)
 
     def test_review_flags_exports_and_explicit_confirmation(self):
-        self.run_worker([{"segments": []}, {"segments": []}])
+        self.run_worker({"segments": []})
         self.client.force_login(self.user)
         detail = self.client.get(reverse("job_detail", args=[self.job.id]))
         self.assertContains(detail, "Voz sem transcrição correspondente")
-        self.assertContains(detail, "00:00:00 - 00:00:03")
+        self.assertContains(detail, "00:00:00 – 00:00:02")
         for fmt in ("txt", "srt", "pdf"):
             result = self.client.get(reverse("export", args=[self.job.id, fmt]))
             self.assertEqual(result.status_code, 200)
@@ -274,11 +265,33 @@ class QualityIntegrationTests(TestCase):
         self.job.refresh_from_db()
         self.assertFalse(self.job.needs_review)
 
+    def test_individual_review_and_speaker_assignment_are_scoped(self):
+        self.run_worker(self.primary(), [TimeoutError()])
+        first, second = self.job.segments.all()
+        self.client.force_login(self.user)
+        self.client.post(reverse("save_review", args=[self.job.id]), {f"segment_{first.pk}": "Obrigado", f"reviewed_{first.pk}": "1", f"assign_{first.pk}": str(second.speaker_id)})
+        first.refresh_from_db()
+        self.assertEqual(first.revised_text, "Obrigado")
+        self.assertEqual(first.speaker_id, second.speaker_id)
+        self.assertFalse(first.needs_review)
+        self.assertIsNotNone(first.reviewed_at)
+        self.assertEqual(first.raw_text, "Thank you.")
+
+    def test_speaker_from_another_job_cannot_be_assigned(self):
+        self.run_worker(self.primary(), [TimeoutError()])
+        from .models import Speaker
+        other = AudioJob.objects.create(user=self.user, original_key="other", original_filename="other.wav")
+        speaker = Speaker.objects.create(job=other, number=1, display_name="Outra pessoa")
+        first = self.job.segments.first()
+        self.client.force_login(self.user)
+        response = self.client.post(reverse("save_review", args=[self.job.id]), {f"assign_{first.pk}": str(speaker.pk), f"segment_{first.pk}": "não salvar"})
+        self.assertEqual(response.status_code, 400)
+        first.refresh_from_db()
+        self.assertEqual(first.revised_text, "")
+
     def test_saving_text_does_not_implicitly_clear_review(self):
-        self.job.status, self.job.needs_review = AudioJob.Status.READY, True
-        self.job.save()
-        save_provider_segments(self.job, [dict(segment(), speaker=None, review_reasons=["unknown_speaker"])])
-        saved = self.job.segments.get()
+        self.run_worker(self.primary(), [TimeoutError()])
+        saved = self.job.segments.first()
         self.client.force_login(self.user)
         self.client.post(reverse("save_review", args=[self.job.id]), {f"segment_{saved.id}": "Texto conferido"})
         saved.refresh_from_db()

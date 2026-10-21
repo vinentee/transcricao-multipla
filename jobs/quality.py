@@ -6,6 +6,11 @@ from langdetect import DetectorFactory, LangDetectException, detect_langs
 DetectorFactory.seed = 0
 
 REVIEW_LABELS = {
+    "speaker_local": "Falante distinguido neste bloco; associação entre blocos pendente",
+    "verification_failed": "Não foi possível verificar novamente este trecho",
+    "verification_unavailable": "Verificação adicional indisponível",
+    "verification_budget": "Limite de verificação adicional atingido",
+    "verification_unresolved": "Confira a alternativa de transcrição com o áudio",
     "english": "Possível mudança para inglês",
     "repetition": "Repetição incomum",
     "missing_speech": "Voz sem transcrição correspondente",
@@ -81,9 +86,15 @@ def assess(segments, duration, speech, language="pt"):
                 break
         item["review_reasons"] = sorted(reasons)
         clean.append(item)
+    short_english = {"thank you", "thanks", "my god", "i don't know", "i dont know", "yes", "exactly", "you know"}
+    if language.split("-")[0].lower() == "pt":
+        for item in clean:
+            text = " ".join(words(item["text"]))
+            if len(words(text)) < 20 and any(re.search(r"\b" + re.escape(phrase) + r"\b", text) for phrase in short_english):
+                item["review_reasons"] = sorted(set(item["review_reasons"]) | {"english"})
     # Sliding passages catch short English interventions without classifying names.
     text_words = [(token, index) for index, s in enumerate(clean) for token in words(s["text"])]
-    if language == "pt":
+    if language.split("-")[0].lower() == "pt":
         for offset in range(0, max(0, len(text_words) - 19), 10):
             passage = text_words[offset:offset + 40]
             try:
@@ -150,3 +161,23 @@ def clock(seconds):
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02}:{minutes:02}:{seconds:02}"
+
+
+def is_portuguese(text):
+    tokens = words(text)
+    if not tokens:
+        return False
+    short = {"sim", "não", "obrigado", "obrigada", "certo", "exatamente", "meu", "deus", "entendi", "claro", "pois", "é", "isso", "tá", "bom", "muito", "bem"}
+    if len(tokens) <= 3 and all(token in short for token in tokens):
+        return True
+    try:
+        return any(item.lang == "pt" and item.prob >= .9 for item in detect_langs(text))
+    except LangDetectException:
+        return False
+
+
+def collect_issues(segments, gaps=()):
+    issues = list(gaps)
+    for item in segments:
+        issues.extend({"code": code, "start": item["start"], "end": item["end"]} for code in item.get("review_reasons", []))
+    return [dict(code=code, start=start, end=end) for code, start, end in sorted({(i["code"], i["start"], i["end"]) for i in issues}, key=lambda i: (i[1], i[2], i[0]))]

@@ -13,6 +13,8 @@
   {% for message in messages %}<p class="alert">{{ message }}</p>{% endfor %}
   <main class="shell page">{% block content %}{% endblock %}</main>
   <link rel="stylesheet" href="{% static 'jobs/progress.css' %}">
+  <link rel="stylesheet" href="{% static 'jobs/review.css' %}">
   <script src="{% static 'jobs/progress.js' %}" defer></script>
+  <script src="{% static 'jobs/review.js' %}" defer></script>
 </body>
 </html>

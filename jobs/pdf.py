@@ -74,12 +74,16 @@ def build_transcript_pdf(job):
         ),
     ]
 
+    segments = list(job.segments.select_related("speaker").all())
     if job.needs_review:
-        story.append(Paragraph("<b>REVISÃO PENDENTE:</b> Confira os trechos sinalizados com o áudio original.", metadata))
-        for notice in job.review_notices:
-            story.append(Paragraph(f"{notice['start']} - {notice['end']}: {escape(notice['label'])}", metadata))
+        count = sum(segment.needs_review for segment in segments)
+        story.append(Paragraph(f"<b>REVISÃO PENDENTE:</b> {count} trecho(s) sinalizado(s). Confira os motivos junto ao texto e consulte o áudio original.", metadata))
+        represented = {(_clock(segment.start_ms), _clock(segment.end_ms)) for segment in segments}
+        notices = {(notice["start"], notice["end"], notice["label"]) for notice in job.review_notices if (notice["start"], notice["end"]) not in represented}
+        for start, end, label in sorted(notices):
+            story.append(Paragraph(f"{start} - {end}: {escape(label)}", metadata))
 
-    for segment in job.segments.select_related("speaker").all():
+    for segment in segments:
         speaker_name = segment.speaker.display_name if segment.speaker else "Falante não identificado"
         heading = Paragraph(f"{_clock(segment.start_ms)} - {_clock(segment.end_ms)} &nbsp; {escape(speaker_name)}", speaker)
         warning = Paragraph("Revisão pendente: " + escape("; ".join(segment.review_labels)), speaker) if segment.needs_review else None

@@ -8,6 +8,7 @@ const { chromium } = require(process.argv[2]);
   const browser = await chromium.launch({headless: true});
   try {
     const page = await browser.newPage();
+    page.on('dialog', dialog => dialog.accept());
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.clock.install();

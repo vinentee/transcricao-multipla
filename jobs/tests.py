@@ -24,6 +24,7 @@ class UploadFormTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("O limite é", form.errors["file"][0])
 
+@override_settings(TRANSCRIPTION_PROVIDER="openai", OPENAI_API_KEY="test-key")
 class PricingAndExportTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(email="ana@example.com", password="senha-segura")
@@ -170,7 +171,7 @@ class JobTaskTests(TestCase):
 
     def test_worker_without_quote_fails_before_calling_openai(self):
         job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="missing-quote.wav", original_filename="missing-quote.wav", duration_seconds=60)
-        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
+        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.transcribe_with_quality") as provider:
             transcribe_job.run(str(job.id))
         job.refresh_from_db()
         self.assertEqual(job.status, AudioJob.Status.FAILED)
@@ -180,7 +181,7 @@ class JobTaskTests(TestCase):
     def test_worker_without_received_payment_fails_before_calling_openai(self):
         job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="missing-payment.wav", original_filename="missing-payment.wav", duration_seconds=60)
         self.create_quote(job)
-        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
+        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.transcribe_with_quality") as provider:
             transcribe_job.run(str(job.id))
         job.refresh_from_db()
         self.assertEqual(job.status, AudioJob.Status.FAILED)
@@ -191,7 +192,7 @@ class JobTaskTests(TestCase):
         job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="wrong-payment.wav", original_filename="wrong-payment.wav", duration_seconds=60)
         self.create_quote(job, total="10.00")
         Payment.objects.create(job=job, status=Payment.Status.RECEIVED, amount_brl="9.00")
-        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
+        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.transcribe_with_quality") as provider:
             transcribe_job.run(str(job.id))
         job.refresh_from_db()
         self.assertEqual(job.status, AudioJob.Status.FAILED)
@@ -202,19 +203,15 @@ class JobTaskTests(TestCase):
         job = AudioJob.objects.create(user=self.user, status=AudioJob.Status.PAID_QUEUED, original_key="success.wav", original_filename="success.wav", duration_seconds=60)
         quote = self.create_quote(job, total="12.34")
         Payment.objects.create(job=job, status=Payment.Status.RECEIVED, amount_brl=quote.total_brl, billing_type="DEVELOPMENT")
-        chunks = MagicMock()
-        chunks.__enter__.return_value = [("/tmp/chunk.m4a", 0)]
-        chunks.__exit__.return_value = False
-        provider_result = {"segments": [{"speaker": "A", "start": 0, "end": 1, "text": "Teste"}], "usage": None}
-        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.prepared_transcription_chunks", return_value=chunks), patch("jobs.tasks.OpenAITranscriptionProvider") as provider:
-            provider.return_value.transcribe.return_value = provider_result
+        provider_result = {"segments": [{"speaker": "A", "start": 0, "end": 1, "text": "Teste"}], "usage": [], "issues": [], "metadata": {"version": 2}}
+        with patch("jobs.tasks.default_storage.exists", return_value=True), patch("jobs.tasks.transcribe_with_quality", return_value=provider_result) as provider:
             transcribe_job.run(str(job.id))
         job.refresh_from_db()
         usage = UsageRecord.objects.get(job=job)
         self.assertEqual(job.status, AudioJob.Status.READY)
         self.assertEqual(usage.charged_brl, Decimal("12.34"))
-        provider.return_value.transcribe.assert_called_once_with("/tmp/chunk.m4a")
-        with patch("jobs.tasks.OpenAITranscriptionProvider") as duplicate_provider:
+        self.assertEqual(provider.call_count, 1)
+        with patch("jobs.tasks.transcribe_with_quality") as duplicate_provider:
             transcribe_job.run(str(job.id))
         duplicate_provider.assert_not_called()
 

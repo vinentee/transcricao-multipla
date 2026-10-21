@@ -9,11 +9,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if not settings.DEV_BYPASS_PAYMENT:
             raise CommandError("A configuração de preços de teste exige DEV_BYPASS_PAYMENT=true.")
-        existing = PricingConfig.objects.filter(notes__startswith="DESENVOLVIMENTO:", active=True).first()
+        existing = PricingConfig.objects.filter(notes__startswith="DESENVOLVIMENTO:", active=True, provider=settings.TRANSCRIPTION_PROVIDER).first()
         if existing:
             self.stdout.write(self.style.WARNING(f"Tabela de teste já existe: {existing.id}"))
             return
         config = PricingConfig.objects.create(
+            provider=settings.TRANSCRIPTION_PROVIDER, api_usd_per_minute="0.01", verification_usd_per_minute="0.01",
             active=True, validated_at=timezone.now(), usd_brl="5.50",
             audio_tokens_per_minute="100", output_tokens_per_minute="10",
             input_usd_per_million="2.50", output_usd_per_million="10.00",

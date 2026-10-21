@@ -1,21 +1,26 @@
-# Transcrição múltipla
+# Voz em Texto
 
-Monólito Django para transcrição sob demanda em português brasileiro. Cada pedido tem uma cotação fechada antes do pagamento e uma cobrança avulsa; não existem assinaturas, saldo nem créditos.
+Monólito Django para transcrição sob demanda em português brasileiro. Cada pedido tem cotação fechada antes do pagamento e cobrança avulsa, sem assinaturas, saldo ou créditos.
 
-## Execução local
+## Desenvolvimento
+
+Copie `.env.example` para `.env` e configure os serviços e as chaves. Instale `requirements.txt`, PostgreSQL, Redis e FFmpeg, ou utilize o Docker Compose:
 
 ```sh
-cp .env.example .env
 docker compose up --build
+```
+
+Em outro terminal:
+
+```sh
 docker compose exec web python manage.py migrate
+docker compose exec web python manage.py seed_dev_pricing
 docker compose exec web python manage.py createsuperuser
 ```
 
-Abra `http://localhost:8000`. Para rodar fora do Docker: crie um ambiente virtual, instale `requirements.txt`, defina `CELERY_TASK_ALWAYS_EAGER=true` para desenvolvimento simples, execute `python manage.py migrate`, o servidor Django e um worker Celery.
+O comando `seed_dev_pricing` exige `DEV_BYPASS_PAYMENT=true`, cria preços ilustrativos para o provedor selecionado e não altera uma tabela de desenvolvimento ativa já existente desse provedor. Não fornece tarifas comerciais. O botão de pagamento de teste cria uma confirmação local, mas as chamadas de transcrição continuam utilizando APIs reais e podem gerar custo.
 
-### Teste local sem Asaas, R2 ou SMTP
-
-Com `DEBUG=true`, `ALLOW_SIGNUPS=true`, `S3_ENABLED=false`, `DEV_BYPASS_PAYMENT=true` e uma `OPENAI_API_KEY` configurada, execute:
+Para executar o Django fora do Docker, configure banco e Redis acessíveis localmente e utilize:
 
 ```sh
 python manage.py migrate
@@ -23,99 +28,91 @@ python manage.py seed_dev_pricing
 python manage.py runserver 0.0.0.0:8000
 ```
 
-O botão **Pagamento de teste** aparece apenas nessas condições e cria uma cobrança local recebida. O endpoint é deliberadamente indisponível quando `DEBUG=false`. Para acesso de outro dispositivo, acrescente `.trycloudflare.com` a `ALLOWED_HOSTS`, `https://*.trycloudflare.com` a `CSRF_TRUSTED_ORIGINS` e execute `cloudflared tunnel --url http://127.0.0.1:8000`.
+## Provedores e qualidade
 
-## Configuração operacional
+Novos pedidos usam Deepgram por padrão:
 
-- Crie um bucket R2 privado e aplique CORS apenas ao domínio público. Configure `S3_*` e `S3_ENABLED=true`; objetos são acessados apenas pelo backend.
-- Configure uma chave de projeto OpenAI e `OPENAI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize`. A referência consultada em 13/10/2026 indica o endpoint de transcrições, `diarized_json`, `chunking_strategy=auto` em arquivos longos e limite de 25 MB por chamada. A tabela de preços deve ser preenchida e validada no Admin antes de aceitar cobranças.
-- Crie uma conta sandbox Asaas, configure `ASAAS_API_KEY`, um `ASAAS_WEBHOOK_TOKEN` exclusivo e o webhook público em `/pagamentos/webhook/asaas/`. O token é validado no cabeçalho `asaas-access-token`; eventos são persistidos por ID e processados assincronamente.
-- Preencha SMTP de produção por variáveis de ambiente. Não inclua segredos, gravações ou dados de pagamento no Git.
+```dotenv
+TRANSCRIPTION_PROVIDER=deepgram
+DEEPGRAM_API_KEY=configure-no-ambiente
+DEEPGRAM_MODEL=nova-3
+DEEPGRAM_LANGUAGE=pt-BR
+OPENAI_API_KEY=configure-para-verificacao-opcional
+OPENAI_VERIFICATION_MODEL=gpt-transcribe
+```
 
-## Railway (publicação rápida)
+Configure as mesmas variáveis em **web e worker**. A ausência da chave do provedor principal impede a cotação e é verificada novamente antes do pagamento. A ausência da chave OpenAI desabilita a verificação adicional, sem invalidar o resultado principal. Segredos não devem ser enviados ao Git.
 
-1. Crie PostgreSQL e Redis gerenciados no projeto Railway e conecte `DATABASE_URL`/`REDIS_URL` aos serviços.
-2. Para o teste privado, crie dois serviços a partir deste repositório e da mesma imagem: `web` com `gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --timeout 120` e `worker` com `celery -A config worker -l info --concurrency=1`. O `beat` pode ser adicionado depois com `celery -A config beat -l info` quando a limpeza automática e a conciliação real forem necessárias.
-3. Execute `python manage.py migrate` uma vez como comando de release; exponha somente o serviço web e configure `/health/` como health check.
-4. Adicione domínio/TLS, configure `PUBLIC_BASE_URL`, `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `DEBUG=false`, `ALLOW_SIGNUPS=false`, `SECURE_SSL_REDIRECT=true`, `SECURE_HSTS_SECONDS=3600`, `SECURE_HSTS_INCLUDE_SUBDOMAINS=true`, `SECURE_HSTS_PRELOAD=true` e segredos. Para o teste com cobrança mocada, use `DEV_BYPASS_PAYMENT=true`; nunca habilite essa opção na operação comercial. Mantenha banco, Redis e R2 privados.
-5. Configure backup diário do PostgreSQL para storage separado e teste restauração antes de habilitar pagamentos reais.
+O Deepgram recebe o áudio completo em PCM mono de 16 kHz, com `diarize_model=v2`, `utterances=true` e pontuação. Os rótulos de falantes permanecem no contexto da gravação inteira; o rótulo `0` é válido. Os horários e as palavras retornadas são preservados. O áudio original não é substituído pelo MP3 de reprodução.
 
-## Limites e checklist antes de produção
+Para usar o caminho OpenAI como principal, configure `TRANSCRIPTION_PROVIDER=openai`, `OPENAI_TRANSCRIPTION_MODEL=gpt-4o-transcribe-diarize` e `TRANSCRIPTION_LANGUAGE=pt`. Esse caminho utiliza blocos de `TRANSCRIPTION_CHUNK_SECONDS=240`, com `TRANSCRIPTION_OVERLAP_SECONDS=3`, buscando pausas nos dez segundos anteriores ao limite. O tamanho deve ser maior que dez segundos e a sobreposição não negativa e menor que tamanho menos dez. Arquivos por chamada têm limite de 25 MB. Rótulos locais são preservados por bloco; somente referências reconhecidas associam identidades entre chamadas. Até quatro referências temporárias de voz são removidas ao encerrar o processamento.
 
-- O fluxo de transcrição requer chave OpenAI, configuração de tarifa validada no Admin e áudio de teste consentido de 1h20/4 falantes.
-- Os textos legais em `/legal/` são modelos e exigem revisão jurídica/LGPD e identificação do controlador.
-- Valide o webhook externo, conciliação Asaas, estorno, backup/restauração e exclusão de áudio após sete dias no ambiente sandbox antes de trocar chaves reais.
-- A documentação oficial deve ser revisada novamente imediatamente antes da ativação comercial: [OpenAI](https://developers.openai.com/api/docs/guides/speech-to-text), [Asaas](https://docs.asaas.com/docs/sobre-os-webhooks) e [R2](https://developers.cloudflare.com/r2/api/s3/presigned-urls/).
+`webrtcvad-wheels` orienta cortes e procura regiões com voz sem texto. Não remove pausas nem falas baixas. A análise sinaliza lacunas de pelo menos 1,5 segundo, repetições, horários inválidos e possíveis mudanças para inglês. `langdetect`, com semente fixa, analisa passagens longas; expressões inglesas curtas recorrentes servem apenas como indício para verificação.
 
+Trechos suspeitos são verificados em ordem cronológica usando `gpt-transcribe`, `languages=["pt"]` e contexto de transcrição literal. Cada trecho recebe no máximo uma chamada adicional, sem repetição automática do SDK. A soma das durações solicitadas não excede 20% da duração original. A verificação parte do áudio, não traduz o texto produzido.
 
-## Fidelidade, falantes e revisão de áudios longos
+A aplicação automática exige texto em português, redução do problema de idioma, ausência de novos sinais de repetição, horário válido, falante conhecido e ausência de sobreposição de vozes. Divergências entre números explícitos exigem revisão. Nos demais casos, uma alternativa é disponibilizada para comparação. Falhas, chave ausente e orçamento esgotado mantêm o resultado utilizável e a pendência. Essas regras são heurísticas; não garantem precisão acústica nem distinguem perfeitamente inglês legítimo de erro do reconhecedor.
 
-O fluxo envia `TRANSCRIPTION_LANGUAGE=pt` em todas as chamadas do modelo
-`gpt-4o-transcribe-diarize`, sem `prompt` (não suportado pelo modelo).
-`TRANSCRIPTION_CHUNK_SECONDS=240` e `TRANSCRIPTION_OVERLAP_SECONDS=3`
-controlam blocos e contexto nas bordas. A duração precisa ser maior que 10
-segundos e a sobreposição deve ser não negativa e menor que duração menos 10.
-Cada arquivo enviado deve ter menos de 25 MB; aumentos excessivos do bloco são
-rejeitados antes da chamada. A duração máxima do pedido continua sendo duas horas.
+## Revisão e áudio privado
 
-O áudio é decodificado uma vez para PCM mono de 16 kHz. `webrtcvad-wheels`
-orienta os cortes, buscando pausas nos dez segundos anteriores ao limite.
-A detecção de voz não remove pausas nem falas baixas: todo o áudio é enviado.
-Cortes e amostras de referência são extraídos do PCM, sem recompressões sucessivas.
+O editor oferece texto em largura total, filtros sem descarte de edições, motivos recolhidos por trecho, seleção/adição de falantes e revisão individual. A conclusão global é explícita. Apagar o texto de uma fala durante a revisão mantém o campo vazio; a primeira versão permanece disponível para auditoria.
 
-A união preserva falas simultâneas. Apenas textos completos equivalentes,
-com tempos próximos e a mesma identidade de voz, são removidos nas
-sobreposições de blocos vizinhos. Versões divergentes são preservadas para
-revisão; não há alinhamento inventado por palavra. Rótulos locais retornados
-pela API não identificam a mesma pessoa automaticamente entre chamadas.
+“Ouvir trecho” reproduz o intervalo com um segundo de contexto em cada borda, limitado à duração do arquivo. O player permite pausar, repetir e selecionar velocidade. Uma versão MP3 de 64 kbps é gerada separadamente para reprodução. Para pedidos antigos, a geração é solicitada por POST e executada pelo worker, sem retranscrição.
 
-Até quatro amostras de voz de 2 a 10 segundos, sem outra fala sobreposta e
-com pelo menos 1,5 segundo de atividade de voz, são extraídas de trechos sem
-alertas e enviadas como referências nas próximas chamadas. São amostras do
-próprio áudio, processadas pelo mesmo provedor. Nenhuma amostra ou dado base64
-é persistido no banco ou nos logs. Os temporários são removidos ao sair do
-processamento, inclusive em falhas. Falantes que não puderem ser associados
-são apresentados como “Falante não identificado”; suas falas são preservadas.
-O limite de quatro referências não limita a quantidade de falas salvas.
+O acesso ao áudio exige autenticação e propriedade do pedido. No armazenamento local, a resposta suporta HEAD e intervalos HTTP para busca por tempo. No R2 privado, a aplicação redireciona para uma URL assinada com validade de cinco minutos; uma URL já emitida é válida até expirar. O editor pode renovar o acesso. Não exponha `MEDIA_ROOT` publicamente em produção.
 
-A verificação sinaliza texto vazio, horários inválidos, voz sem texto por
-pelo menos 1,5 segundo, sequências de quatro palavras repetidas quatro vezes
-seguidas e possível mudança para inglês. `langdetect`, com semente fixa,
-avalia passagens de pelo menos 20 palavras e exige probabilidade de inglês
-mínima de 90%. Essas verificações são heurísticas: podem deixar passar erros
-ou sinalizar trechos corretos, especialmente em gravações multilíngues.
+A exclusão manual e a limpeza após sete dias removem original e MP3. Um arquivo em preparação não é associado ao pedido se a exclusão ocorrer durante sua geração. Se a preparação falhar, pode ser solicitada novamente; preparações paradas por mais de quinze minutos também podem ser reenfileiradas.
 
-Cada bloco suspeito pode ter **uma** chamada adicional, com o mesmo áudio,
-contexto das bordas e referências já disponíveis. A troca exige menos problemas
-detectados e nenhuma perda de cobertura de voz; empate mantém o original.
-Falhas da verificação adicional mantêm o primeiro resultado para revisão.
-No pior caso, todos os blocos terão duas chamadas. O consumo retornado por
-todas as chamadas é somado, sem alterar o preço aceito nem gerar nova cobrança.
-Chamadas que falhem antes de retornar uso podem não ser contabilizadas localmente.
-Não se traduz nem se completa automaticamente o texto produzido.
+Novos resultados guardam provedor/modelo, rótulo original do falante, palavras e horários, alternativas, motivos de revisão e consumo. Logs não incluem gravações, texto transcrito, respostas de erro dos provedores nem chaves. TXT, SRT e PDF usam as revisões salvas e indicam pendências; os detalhes ficam junto aos respectivos trechos, sem um preâmbulo extenso no PDF.
 
-`AudioJob.review_reasons` guarda códigos e intervalos dos alertas;
-`TranscriptSegment.review_reasons` guarda os códigos do trecho.
-`quality_metadata` registra versão do fluxo, idioma, blocos e novas tentativas.
-O editor e as exportações indicam revisão pendente, inclusive lacunas sem
-segmentos. Na exportação SRT o aviso geral aparece na primeira legenda;
-os intervalos e motivos completos ficam no editor, TXT e PDF.
-Salvar texto editado não remove os alertas. Após conferir o áudio, o usuário
-pode confirmar a conclusão da revisão para limpar as sinalizações.
+## Preços e compatibilidade
 
-### Atualização e validação
+O provedor e o modelo são fixados no pedido antes da cotação. Mudanças das variáveis não alteram pedidos aceitos. Migrações identificam pedidos anteriores como OpenAI e preservam resultados e edições humanas. Não há reprocessamento automático.
 
-Instale `requirements.txt`, execute `python manage.py migrate` e reinicie os
-processos web e Celery. A migração acrescenta campos com valores vazios,
-preservando resultados existentes e revisões manuais. Pedidos concluídos não
-são reprocessados automaticamente. As regras de pagamento e estorno não mudam.
+No Admin, selecione o provedor da tabela. Para Deepgram, preencha `api_usd_per_minute`, `verification_usd_per_minute`, câmbio, infraestrutura, tarifas e margem, e valide a configuração. Use as tarifas efetivas de sua conta, incluindo os recursos contratados. A cotação reserva até 20% da duração para a verificação. Para OpenAI principal, permanece disponível o cálculo por tokens. O consumo de verificações e do provedor principal é registrado separadamente e estimado usando a tarifa congelada na cotação, sem cobrança adicional sobre preços já aceitos. Tarifas históricas incompletas geram custo desconhecido, não um valor inventado. Falhas sem retorno de uso podem não aparecer na contabilização local.
 
-Execute `python manage.py test`. A suíte inclui preparação real via FFmpeg,
-limites equivalentes a duas horas, união de bordas, falas simultâneas,
-referências, detecção de idioma, tentativas limitadas, consumo e alertas.
-Os testes usam respostas simuladas da API e não avaliam fidelidade acústica.
-Antes de validar a qualidade em produção, compare com uma transcrição humana
-amostras do início, meio, final e limites dos blocos do áudio de teste, incluindo
-01:18–01:20. Confira palavras omitidas, inseridas, substituídas, valores numéricos,
-identidade dos falantes e mudanças indevidas de idioma. Os detectores não
-representam uma garantia de transcrição perfeita.
+## Railway
+
+1. Mantenha PostgreSQL e Redis conectados por `DATABASE_URL` e `REDIS_URL`, com `CELERY_TASK_ALWAYS_EAGER=false`; configure R2 privado com `S3_*` e `S3_ENABLED=true` para acesso compartilhado de web e worker.
+2. Atualize **web e worker para o mesmo commit**, com as variáveis dos provedores nos dois serviços.
+3. No web, configure o **Pre-deploy Command**:
+
+   ```sh
+   python manage.py migrate --noinput
+   ```
+
+   Para teste privado com `DEV_BYPASS_PAYMENT=true`, pode manter:
+
+   ```sh
+   python manage.py migrate --noinput && python manage.py seed_dev_pricing
+   ```
+
+4. O web utiliza `gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --timeout 120`. O worker utiliza `celery -A config worker -l info --concurrency=1`. A tarefa de áudio longo executa no worker; não aumente o tempo HTTP para acomodá-la. Para exclusão automática e conciliação, mantenha `celery -A config beat -l info`.
+5. Aguarde migrações e ambos os deploys terminarem. Configure `/health/` como health check, domínio/TLS, `PUBLIC_BASE_URL`, `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `DEBUG=false`, `ALLOW_SIGNUPS=false` e `SECURE_SSL_REDIRECT=true`. Não inclua segredos ou gravações no Git.
+6. Para operação comercial, valide as tarifas reais e desative `DEV_BYPASS_PAYMENT`; remova `seed_dev_pricing` do pre-deploy. Mantenha SMTP, Asaas, webhook `/pagamentos/webhook/asaas/`, backups do PostgreSQL e as informações legais do serviço configurados.
+
+## Testes e comparação de qualidade
+
+```sh
+python manage.py test
+```
+
+A suíte cobre os adaptadores com respostas simuladas, migrações, preços, falante zero, preservação de rótulos, verificações limitadas, edição, segurança e exclusão do áudio. A preparação e reprodução usam FFmpeg real em testes locais.
+
+Os testes de navegador são habilitados apontando `PLAYWRIGHT_MODULE` para uma instalação de Playwright com Chromium:
+
+```sh
+PLAYWRIGHT_MODULE=/caminho/node_modules/playwright python manage.py test jobs.test_browser
+```
+
+Eles verificam desktop/celular, largura dos campos, filtros, persistência de edição, reprodução, parada, repetição, velocidade e renovação da URL. Testes simulados verificam o fluxo e não medem fidelidade acústica.
+
+Para comparar explicitamente os provedores em um arquivo local consentido:
+
+```sh
+python manage.py compare_transcription --audio /caminho/amostra.wav --output /caminho/relatorio-novo.json
+```
+
+Esse comando faz chamadas pagas, exige ambas as chaves, não executa verificação adicional, não altera pedidos e não sobrescreve arquivos existentes. O relatório contém transcrições, pendências, consumo e tempo por provedor e é criado com permissão `0600`. Mantenha-o fora do Git e de diretórios públicos. Pode limitar a comparação com `--providers deepgram` ou `--providers openai`.
+
+Compare amostras do início, meio, final e trechos problemáticos, incluindo 01:18–01:20 do teste original, com uma referência humana. Confira palavras omitidas, inseridas e substituídas, números, idioma, falantes, tempo e custo. A avaliação acústica depende do áudio original e das chaves reais; não é substituída pelos testes automatizados.

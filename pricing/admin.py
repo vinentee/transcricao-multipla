@@ -3,7 +3,7 @@ from django.utils import timezone
 from .models import PricingConfig
 @admin.register(PricingConfig)
 class PricingConfigAdmin(admin.ModelAdmin):
-    list_display = ("created_at", "active", "validated_at", "is_chargeable")
+    list_display = ("created_at", "provider", "active", "validated_at", "is_chargeable")
     readonly_fields = ("created_at",)
     actions = ["validate_configs"]
     @admin.action(description="Validar configurações selecionadas")

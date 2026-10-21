@@ -85,11 +85,19 @@ def cut_pcm(source, output, start, duration):
         raise ValueError("Bloco vazio ou superior ao limite de 25 MB.")
 
 
+@dataclass
+class PreparedAudio:
+    path: str
+    duration: float
+    speech: list
+
+
 @contextmanager
-def prepare_chunks(job):
+def prepare_audio(job, storage=None):
     with tempfile.TemporaryDirectory(prefix="transcription-") as workdir:
         source = os.path.join(workdir, "original" + Path(job.original_filename).suffix.lower())
-        with default_storage.open(job.original_key, "rb") as remote, open(source, "wb") as local:
+        storage = storage or default_storage
+        with storage.open(job.original_key, "rb") as remote, open(source, "wb") as local:
             for data in iter(lambda: remote.read(1024 * 1024), b""):
                 local.write(data)
         pcm = os.path.join(workdir, "normalized.wav")
@@ -98,14 +106,23 @@ def prepare_chunks(job):
             duration = audio.getnframes() / audio.getframerate()
         if not math.isfinite(duration) or duration <= 0 or duration > settings.MAX_AUDIO_SECONDS + 1:
             raise ValueError("Duração do áudio inválida ou superior ao limite.")
-        speech = voice_intervals(pcm)
-        chunks = []
-        for index, (start, end) in enumerate(boundaries(duration, speech, settings.TRANSCRIPTION_CHUNK_SECONDS, settings.TRANSCRIPTION_OVERLAP_SECONDS)):
-            path = os.path.join(workdir, f"chunk-{index:04}.wav")
-            cut_pcm(pcm, path, start, end - start)
-            local_speech = [(max(left, start) - start, min(right, end) - start) for left, right in speech if right > start and left < end]
-            chunks.append(AudioChunk(path, start, end - start, local_speech, pcm))
-        yield chunks
+        yield PreparedAudio(pcm, duration, voice_intervals(pcm))
+
+
+def chunks_for_audio(prepared):
+    chunks = []
+    for index, (start, end) in enumerate(boundaries(prepared.duration, prepared.speech, settings.TRANSCRIPTION_CHUNK_SECONDS, settings.TRANSCRIPTION_OVERLAP_SECONDS)):
+        path = os.path.join(os.path.dirname(prepared.path), f"chunk-{index:04}.wav")
+        cut_pcm(prepared.path, path, start, end - start)
+        speech = [(max(left, start) - start, min(right, end) - start) for left, right in prepared.speech if right > start and left < end]
+        chunks.append(AudioChunk(path, start, end - start, speech, prepared.path))
+    return chunks
+
+
+@contextmanager
+def prepare_chunks(job):
+    with prepare_audio(job) as prepared:
+        yield chunks_for_audio(prepared)
 
 
 class SpeakerReferences:
@@ -151,6 +168,13 @@ class SpeakerReferences:
                     break
         for item in segments:
             label = item.get("speaker")
-            item["speaker"] = mapping.get(label)
-            if item["speaker"] is None:
+            item["provider_label"] = str(label) if label is not None else ""
+            if label in mapping:
+                item["speaker"], item["speaker_scope"] = mapping[label], "global"
+            elif label is not None and str(label):
+                item["speaker"] = f"block_{round(chunk.offset * 1000)}:{label}"
+                item["speaker_scope"] = "local"
+                item["review_reasons"] = sorted(set(item.get("review_reasons", [])) | {"speaker_local"})
+            else:
+                item["speaker"], item["speaker_scope"] = None, "unknown"
                 item["review_reasons"] = sorted(set(item.get("review_reasons", [])) | {"unknown_speaker"})

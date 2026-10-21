@@ -34,6 +34,11 @@ def development_payment(request, job_id):
         quote = Quote.objects.filter(job=job).first()
         if job.status != AudioJob.Status.QUOTED or quote is None or quote.expired:
             return JsonResponse({"error": "Cotação indisponível ou expirada."}, status=400)
+        from jobs.providers import require_provider
+        try:
+            require_provider(job.transcription_provider or "openai")
+        except ValueError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
         payment, created = Payment.objects.get_or_create(
             job=job,
             defaults={"amount_brl": quote.total_brl, "status": Payment.Status.RECEIVED,

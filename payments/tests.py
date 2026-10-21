@@ -22,7 +22,7 @@ class WebhookTests(TestCase):
         self.assertEqual(WebhookEvent.objects.count(), 1)
         delay.assert_called_once_with("evt_1")
 
-@override_settings(DEBUG=False, DEV_BYPASS_PAYMENT=True)
+@override_settings(DEBUG=False, DEV_BYPASS_PAYMENT=True, OPENAI_API_KEY="test-key")
 class DevelopmentPaymentTests(TestCase):
     def setUp(self):
         self.user=get_user_model().objects.create_user(email="dev@example.com", password="senha")

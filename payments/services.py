@@ -7,6 +7,8 @@ from .providers import AsaasPaymentGateway
 
 def create_payment(job):
     if job.status != AudioJob.Status.QUOTED or job.quote.expired: raise ValueError("Cotação indisponível ou expirada.")
+    from jobs.providers import require_provider
+    require_provider(job.transcription_provider or "openai")
     if not settings.ASAAS_API_KEY: raise ValueError("Asaas não configurado.")
     gateway = AsaasPaymentGateway()
     customer_id = gateway.ensure_customer(job.user)

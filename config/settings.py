@@ -92,3 +92,14 @@ SECURE_HSTS_PRELOAD = os.getenv("SECURE_HSTS_PRELOAD", "false").lower() == "true
 CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE = not DEBUG
 
 TRANSCRIPTION_LANGUAGE = os.getenv("TRANSCRIPTION_LANGUAGE", "pt")
+
+# Only new quotes use these defaults; accepted jobs retain their snapshot.
+TRANSCRIPTION_PROVIDER = os.getenv("TRANSCRIPTION_PROVIDER", "deepgram")
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
+DEEPGRAM_MODEL = os.getenv("DEEPGRAM_MODEL", "nova-3")
+DEEPGRAM_LANGUAGE = os.getenv("DEEPGRAM_LANGUAGE", "pt-BR")
+OPENAI_VERIFICATION_MODEL = os.getenv("OPENAI_VERIFICATION_MODEL", "gpt-transcribe")
+
+# Supports long transcripts even when JavaScript is disabled. The editor
+# normally submits only changed fields.
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 20000

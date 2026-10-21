@@ -23,18 +23,22 @@ def inspect_audio(job):
     if seconds <= 0 or seconds > settings.MAX_AUDIO_SECONDS: raise ValueError("Duração inválida ou superior a duas horas.")
     return seconds
 def create_quote(job):
-    calc = quote_for_seconds(job.duration_seconds); c = calc["config"]
+    from .providers import freeze_provider
+    freeze_provider(job)
+    calc = quote_for_seconds(job.duration_seconds, provider=job.transcription_provider); c = calc["config"]
     snapshot = {field: str(getattr(c, field)) for field in ("usd_brl","audio_tokens_per_minute","output_tokens_per_minute","input_usd_per_million","output_usd_per_million","infra_brl_per_minute","gateway_fixed_brl","gateway_percent","margin")}
+    snapshot.update({"provider": job.transcription_provider, "model": job.transcription_model, "api_usd_per_minute": str(c.api_usd_per_minute), "verification_usd_per_minute": str(c.verification_usd_per_minute)})
     return Quote.objects.create(job=job, duration_seconds=job.duration_seconds, total_brl=calc["total_brl"], api_brl=calc["api_brl"], infra_brl=calc["infra_brl"], pricing_snapshot=snapshot, expires_at=timezone.now()+timedelta(minutes=30))
 def save_provider_segments(job, segments):
     mapping = {}
     for ordinal, item in enumerate(segments, 1):
         label = item.get("speaker")
-        if label and label not in mapping:
+        label = str(label) if label is not None else None
+        if label is not None and label not in mapping:
             number = len(mapping) + 1
             mapping[label] = Speaker.objects.create(job=job, number=number, display_name=f"Falante {number}", provider_label=label)
         reasons = sorted(set(item.get("review_reasons", [])))
-        if not label:
+        if label is None:
             reasons = sorted(set(reasons) | {"unknown_speaker"})
         start, end = max(0, round(item["start"] * 1000)), max(0, round(item["end"] * 1000))
         if end <= start:
@@ -42,7 +46,9 @@ def save_provider_segments(job, segments):
             reasons = sorted(set(reasons) | {"invalid_segment"})
         TranscriptSegment.objects.create(
             job=job, speaker=mapping.get(label), ordinal=ordinal, start_ms=start, end_ms=end,
-            raw_text=item.get("text", ""), needs_review=bool(reasons) or item.get("needs_review", False), review_reasons=reasons,
+            raw_text=item.get("raw_text", item.get("text", "")), corrected_text=item.get("corrected_text", ""),
+            provider_label=item.get("provider_label", label or ""), speaker_scope=item.get("speaker_scope", "global" if label is not None else "unknown"),
+            provider_words=item.get("words", []), alternatives=item.get("alternatives", []), needs_review=bool(reasons) or item.get("needs_review", False), review_reasons=reasons,
         )
         job.needs_review = job.needs_review or bool(reasons) or item.get("needs_review", False)
     job.save(update_fields=["needs_review", "review_reasons", "quality_metadata"])

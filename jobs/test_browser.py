@@ -49,3 +49,38 @@ class ProgressBrowserTests(TestCase):
             text=True, capture_output=True, timeout=90,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+@skipUnless(os.getenv("PLAYWRIGHT_MODULE"), "PLAYWRIGHT_MODULE is required for browser verification")
+class ReviewBrowserTests(TestCase):
+    def test_review_layout_playback_and_edit_preservation(self):
+        import base64
+        import tempfile
+        from .test_quality import write_wave
+        user = get_user_model().objects.create_user(email="review-browser@example.com", password="test-password")
+        self.client.force_login(user)
+        job = AudioJob.objects.create(user=user, status=AudioJob.Status.READY, original_key="review.wav", original_filename="Conversa de teste.wav", duration_seconds=120, playback_key="review.mp3", playback_status="ready", needs_review=True)
+        Quote.objects.create(job=job, duration_seconds=120, total_brl="10", api_brl="1", infra_brl="1", pricing_snapshot={}, expires_at=timezone.now() + timezone.timedelta(minutes=30))
+        first = Speaker.objects.create(job=job, number=1, display_name="Falante 1")
+        second = Speaker.objects.create(job=job, number=2, display_name="Falante 2")
+        segments = []
+        for index in range(30):
+            start = 2000 + index * 4000
+            segments.append(TranscriptSegment.objects.create(job=job, speaker=first if index % 2 == 0 else second, ordinal=index + 1, start_ms=start, end_ms=start + 2000,
+                raw_text="Vamos conferir como o texto e os falantes aparecem nesta conversa.", needs_review=index % 2 == 0, review_reasons=["english", "verification_unresolved"] if index % 2 == 0 else []))
+        job.review_reasons = [{"code": code, "start": s.start_ms / 1000, "end": s.end_ms / 1000} for s in segments for code in s.review_reasons]
+        job.save()
+        url = reverse("job_detail", args=[job.pk])
+        html = self.client.get(url).content.decode()
+        with tempfile.TemporaryDirectory() as directory:
+            wav, mp3 = str(Path(directory) / "source.wav"), str(Path(directory) / "source.mp3")
+            write_wave(wav, 12)
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", wav, "-c:a", "libmp3lame", "-b:a", "64k", mp3], check=True, capture_output=True)
+            audio = base64.b64encode(Path(mp3).read_bytes()).decode()
+        result = subprocess.run(["node", str(Path(__file__).with_name("browser_review.cjs")), os.environ["PLAYWRIGHT_MODULE"]], input=json.dumps({
+            "root": str(settings.BASE_DIR), "html": html, "detailUrl": url,
+            "mediaStatusUrl": reverse("playback_status", args=[job.pk]), "mediaUrl": reverse("playback_audio", args=[job.pk]),
+            "prepareUrl": reverse("request_playback", args=[job.pk]), "audio": audio,
+            "secondSpeaker": str(second.pk), "firstTextName": f"segment_{segments[0].pk}",
+        }), text=True, capture_output=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

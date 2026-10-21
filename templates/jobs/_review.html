@@ -38,6 +38,9 @@
                data-pending="{{ segment.needs_review|yesno:'true,false' }}"
                data-speaker="{{ segment.speaker_id|default:'unknown' }}"
                data-start="{{ segment.start_ms }}" data-end="{{ segment.end_ms }}">
+        <input type="hidden" name="delete_segment_{{ segment.id }}" value="1" data-delete-marker disabled>
+        <div class="deletion-notice" data-deletion-notice hidden role="status"><span>Trecho {{ segment.start_clock }} – {{ segment.end_clock }} será excluído ao salvar.</span><button type="button" class="button secondary" data-undo-delete>Desfazer</button></div>
+        <div data-segment-body>
         <header class="segment-header">
           <label class="segment-speaker"><span class="sr-only">Falante deste trecho</span>
             <select name="assign_{{ segment.id }}" aria-label="Falante de {{ segment.start_clock }}">
@@ -48,6 +51,7 @@
           <span class="segment-time">{{ segment.start_clock }} – {{ segment.end_clock }}</span>
           <button type="button" class="button secondary listen-button" data-listen>▶ Ouvir trecho</button>
           {% if segment.needs_review %}<span class="review-badge">Revisão pendente</span>{% endif %}
+          <button type="button" class="delete-segment" data-delete-segment aria-label="Excluir trecho de {{ segment.start_clock }}">Excluir trecho</button>
         </header>
         <label class="sr-only" for="text-{{ segment.id }}">Transcrição de {{ segment.start_clock }}</label>
         <textarea id="text-{{ segment.id }}" name="segment_{{ segment.id }}" data-transcript rows="3" placeholder="Confira o áudio e escreva o trecho que falta.">{{ segment.text }}</textarea>
@@ -63,10 +67,22 @@
           {% for alternative in segment.alternatives %}<div class="alternative"><p class="alternative-label">Verificação{% if alternative.applied %} · aplicada automaticamente{% endif %}</p><p class="alternative-text" data-alternative-text>{{ alternative.text|default:'Nenhum texto retornado.' }}</p>{% if alternative.text %}<button type="button" class="button secondary" data-use-alternative>Usar esta versão</button>{% endif %}</div>{% endfor %}
         </details>
         {% endif %}
+        <noscript><label><input type="checkbox" name="delete_segment_{{ segment.id }}" value="1"> Excluir este trecho ao salvar a revisão</label></noscript>
+        </div>
       </article>
-      {% empty %}<p>Não há segmentos disponíveis. Confira os avisos e o áudio original.</p>{% endfor %}
+      {% empty %}<p>{% if excluded_segments %}Todos os trechos foram excluídos. Você pode restaurá-los na seção abaixo.{% else %}Não há segmentos disponíveis. Confira os avisos e o áudio original.{% endif %}</p>{% endfor %}
     </div>
     <p data-no-matches hidden>Nenhum trecho corresponde aos filtros selecionados.</p>
+    {% if excluded_segments %}
+    <details class="excluded-segments"><summary>Trechos excluídos ({{ excluded_segments|length }})</summary>
+      <p>A exclusão remove o trecho da transcrição e das exportações. O histórico e o áudio são preservados.</p>
+      {% for segment in excluded_segments %}<article class="excluded-segment">
+        <strong>{{ segment.start_clock }} – {{ segment.end_clock }} · {{ segment.speaker.display_name|default:'Falante não identificado' }}</strong>
+        <p>{{ segment.text|default:'Trecho sem texto.' }}</p>
+        <label class="quality-confirm compact-check"><input type="checkbox" name="restore_segment_{{ segment.id }}" value="1"> Restaurar este trecho ao salvar</label>
+      </article>{% endfor %}
+    </details>
+    {% endif %}
     {% if job.needs_review %}<details class="review-completion"><summary>Concluir todas as pendências</summary><label class="quality-confirm compact-check"><input type="checkbox" name="confirm_quality_review" value="1"> Conferi todos os trechos com o áudio e concluí a revisão.</label></details>{% endif %}
     <footer class="review-save-bar">
       <span data-save-state role="status">Alterações salvas.</span>

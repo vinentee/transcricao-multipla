@@ -11,7 +11,7 @@
     const speakerFilter = root.querySelector('[data-speaker-filter]');
     const speed = root.querySelector('[data-playback-speed]');
     const repeat = root.querySelector('[data-repeat]');
-    let dirty = false, range = null, currentCard = null, nextIndex = -1;
+    let dirty = false, range = null, currentCard = null, nextIndex = -1, playbackRequest = 0;
     let draftSpeakerCount = 0;
     const legacyPending = Math.max(0, Number(root.dataset.pendingTotal) - cards.filter(card => card.dataset.pending === 'true').length);
     let polling = false, sourceAt = 0, recovering = false, playTimer = null;
@@ -34,15 +34,16 @@
       let visible = 0;
       const textareas = [];
       cards.forEach(card => {
-        card.hidden = (filter.value === 'pending' && card.dataset.pending !== 'true') ||
-          (speakerFilter.value !== 'all' && speakerFilter.value !== card.dataset.speaker);
-        if (!card.hidden) { visible++; textareas.push(card.querySelector('[data-transcript]')); }
+        const deleting = card.dataset.deleting === 'true';
+        card.hidden = !deleting && ((filter.value === 'pending' && card.dataset.pending !== 'true') ||
+          (speakerFilter.value !== 'all' && speakerFilter.value !== card.dataset.speaker));
+        if (!card.hidden && !deleting) { visible++; textareas.push(card.querySelector('[data-transcript]')); }
         const badge = card.querySelector('.review-badge');
         if (badge) badge.textContent = card.dataset.pending === 'true' ? 'Revisão pendente' : 'Conferido · não salvo';
       });
       resizeMany(textareas);
       root.querySelector('[data-no-matches]').hidden = visible > 0;
-      const pending = (form.querySelector('[name="confirm_quality_review"]')?.checked ? 0 : legacyPending) + cards.filter(card => card.dataset.pending === 'true').length;
+      const pending = (form.querySelector('[name="confirm_quality_review"]')?.checked ? 0 : legacyPending) + cards.filter(card => card.dataset.pending === 'true' && card.dataset.deleting !== 'true').length;
       root.querySelector('[data-pending-summary]').textContent = `${pending} trecho${pending === 1 ? '' : 's'} para revisar`;
     }
     filter.addEventListener('change', applyFilters);
@@ -87,7 +88,7 @@
       for (let step = 1; step <= cards.length; step++) {
         const index = (nextIndex + step) % cards.length;
         const card = cards[index];
-        if (card.dataset.pending === 'true' && (speakerFilter.value === 'all' || speakerFilter.value === card.dataset.speaker)) {
+        if (card.dataset.deleting !== 'true' && card.dataset.pending === 'true' && (speakerFilter.value === 'all' || speakerFilter.value === card.dataset.speaker)) {
           nextIndex = index; target = card; break;
         }
       }
@@ -98,6 +99,25 @@
       } else {
         root.querySelector('[data-save-state]').textContent = 'Nenhuma pendência para o falante selecionado.';
       }
+    });
+    root.addEventListener('click', event => {
+      const remove = event.target.closest('[data-delete-segment]');
+      const undo = event.target.closest('[data-undo-delete]');
+      if (!remove && !undo) return;
+      const card = (remove || undo).closest('[data-review-segment]');
+      const deleting = Boolean(remove);
+      card.dataset.deleting = String(deleting);
+      card.classList.toggle('is-deleting', deleting);
+      card.querySelector('[data-delete-marker]').disabled = !deleting;
+      card.querySelector('[data-segment-body]').hidden = deleting;
+      card.querySelector('[data-deletion-notice]').hidden = !deleting;
+      if (deleting) playbackRequest++;
+      if (deleting && currentCard === card) {
+        audio.pause(); range = null;
+        card.classList.remove('is-playing'); currentCard = null;
+      }
+      changed(); applyFilters();
+      card.querySelector(deleting ? '[data-undo-delete]' : '[data-delete-segment]').focus();
     });
     root.querySelector('[data-add-speaker]').addEventListener('click', () => {
       const input = root.querySelector('[data-new-speaker-name]');
@@ -182,9 +202,11 @@
       });
     }
     async function playCard(card) {
+      const ticket = ++playbackRequest;
       audio.pause();
-      if (!await prepare()) return;
+      if (!await prepare() || ticket !== playbackRequest || card.dataset.deleting === 'true') return;
       await waitMetadata();
+      if (ticket !== playbackRequest || card.dataset.deleting === 'true') return;
       const duration = Number.isFinite(audio.duration) ? audio.duration : Number(root.dataset.duration);
       range = {start: Math.max(0, Number(card.dataset.start) / 1000 - 1), end: Math.min(duration, Number(card.dataset.end) / 1000 + 1)};
       if (range.end <= range.start) throw new Error('O horário deste trecho não corresponde ao áudio disponível.');

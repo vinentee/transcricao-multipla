@@ -62,6 +62,7 @@ class TranscriptSegment(models.Model):
     provider_label = models.CharField(max_length=100, blank=True)
     speaker_scope = models.CharField(max_length=16, default="global", choices=[("global", "Gravação"), ("local", "Bloco"), ("unknown", "Não identificado")])
     provider_words = models.JSONField(default=list, blank=True)
+    excluded_at = models.DateTimeField(null=True, blank=True)
     has_manual_revision = models.BooleanField(default=False)
     corrected_text = models.TextField(blank=True)
     alternatives = models.JSONField(default=list, blank=True)

@@ -79,11 +79,13 @@ def job_detail(request, pk):
         raise Http404
     retry_available = settings.DEV_BYPASS_PAYMENT and not job.audio_deleted_at and job.status in {AudioJob.Status.FAILED, AudioJob.Status.REFUND_PENDING}
     template = "jobs/_detail.html" if request.GET.get("partial") == "1" else "jobs/detail.html"
-    segments = list(job.segments.select_related("speaker"))
-    intervals = {(segment.start_ms // 1000, segment.end_ms // 1000) for segment in segments}
+    all_segments = list(job.segments.select_related("speaker"))
+    segments = [segment for segment in all_segments if segment.excluded_at is None]
+    excluded_segments = [segment for segment in all_segments if segment.excluded_at is not None]
+    intervals = {(segment.start_ms // 1000, segment.end_ms // 1000) for segment in all_segments}
     legacy_notices = [notice for issue, notice in zip(job.review_reasons, job.review_notices) if (int(issue["start"]), int(issue["end"])) not in intervals]
     pending_count = sum(segment.needs_review for segment in segments) + len({(notice["start"], notice["end"]) for notice in legacy_notices})
-    return render(request, template, {"job": job, "segments": segments, "pending_count": pending_count,
+    return render(request, template, {"job": job, "segments": segments, "excluded_segments": excluded_segments, "pending_count": pending_count,
                                     "legacy_notices": legacy_notices, "dev_bypass_payment": settings.DEV_BYPASS_PAYMENT,
                                     "retry_available": retry_available, "job_state": status_payload(job)})
 
@@ -190,7 +192,7 @@ def export(request, pk, fmt):
     job = owned_job(request, pk)
     if job.status != AudioJob.Status.READY or job.audio_deleted_at:
         raise Http404
-    segs = job.segments.select_related("speaker")
+    segs = job.segments.filter(excluded_at__isnull=True).select_related("speaker")
     if fmt == "txt":
         body = "\n".join(f"[{timestamp(s.start_ms)} - {timestamp(s.end_ms)}] {s.speaker.display_name if s.speaker else 'Falante não identificado'}: {'[Revisão pendente] ' if s.needs_review else ''}{s.text}" for s in segs)
         if job.needs_review:
@@ -231,6 +233,8 @@ def save_review(request, pk):
             return JsonResponse({"error": "Novos falantes inválidos."}, status=400)
         # Validate all assignments before saving any edits.
         for segment in job.segments.all():
+            if request.POST.get(f"delete_segment_{segment.pk}") == "1" and request.POST.get(f"restore_segment_{segment.pk}") == "1":
+                return JsonResponse({"error": "Não é possível excluir e restaurar o mesmo trecho ao mesmo tempo."}, status=400)
             key = f"assign_{segment.pk}"
             if key in request.POST and request.POST[key] and request.POST[key] not in speakers and request.POST[key] not in new_names:
                 return JsonResponse({"error": "Falante inválido para este pedido."}, status=400)
@@ -248,6 +252,17 @@ def save_review(request, pk):
         segments = list(job.segments.all())
         for segment in segments:
             changed = False
+            deleting = request.POST.get(f"delete_segment_{segment.pk}") == "1"
+            restoring = request.POST.get(f"restore_segment_{segment.pk}") == "1"
+            # An archived segment is read-only until explicitly restored.
+            if segment.excluded_at is not None and not restoring:
+                continue
+            if restoring and segment.excluded_at is not None:
+                segment.excluded_at = None
+                changed = True
+            if deleting and segment.excluded_at is None:
+                segment.excluded_at = timezone.now()
+                changed = True
             text = request.POST.get(f"segment_{segment.pk}")
             if text is not None:
                 segment.revised_text = text
@@ -266,23 +281,23 @@ def save_review(request, pk):
                     segment.speaker_scope = "unknown"
                     segment.review_reasons = sorted(set(segment.review_reasons) | {"unknown_speaker"})
                     segment.needs_review = True
-            if confirm_all or request.POST.get(f"reviewed_{segment.pk}") == "1":
+            if segment.excluded_at is None and (confirm_all or request.POST.get(f"reviewed_{segment.pk}") == "1"):
                 segment.needs_review, segment.review_reasons = False, []
                 segment.reviewed_at = timezone.now()
                 changed = True
             if changed:
-                segment.save(update_fields=["revised_text", "has_manual_revision", "speaker", "speaker_scope", "needs_review", "review_reasons", "reviewed_at"])
+                segment.save(update_fields=["excluded_at", "revised_text", "has_manual_revision", "speaker", "speaker_scope", "needs_review", "review_reasons", "reviewed_at"])
         if confirm_all:
             job.review_reasons = []
         else:
             # Legacy gap notices without a corresponding segment remain visible.
-            represented = {(s.start_ms / 1000, s.end_ms / 1000) for s in segments}
-            gaps = [issue for issue in job.review_reasons if issue["code"] == "missing_speech" and (issue["start"], issue["end"]) not in represented]
+            represented = {(s.start_ms, s.end_ms) for s in segments}
+            gaps = [issue for issue in job.review_reasons if issue["code"] == "missing_speech" and (round(issue["start"] * 1000), round(issue["end"] * 1000)) not in represented]
             job.review_reasons = collect_issues([
                 {"start": s.start_ms / 1000, "end": s.end_ms / 1000, "review_reasons": s.review_reasons}
-                for s in segments if s.needs_review
+                for s in segments if s.needs_review and s.excluded_at is None
             ], gaps)
-        job.needs_review = bool(job.review_reasons) or any(s.needs_review for s in segments)
+        job.needs_review = bool(job.review_reasons) or any(s.needs_review for s in segments if s.excluded_at is None)
         job.save(update_fields=["needs_review", "review_reasons", "updated_at"])
     messages.success(request, "Revisão salva.")
     return redirect("job_detail", pk=pk)

@@ -55,7 +55,7 @@ A aplicação automática exige texto em português, redução do problema de id
 
 ## Revisão e áudio privado
 
-O editor oferece texto em largura total, filtros sem descarte de edições, motivos recolhidos por trecho, seleção/adição de falantes e revisão individual. A conclusão global é explícita. Apagar o texto de uma fala durante a revisão mantém o campo vazio; a primeira versão permanece disponível para auditoria.
+O editor oferece texto em largura total, filtros sem descarte de edições, motivos recolhidos por trecho, seleção/adição de falantes e revisão individual. A conclusão global é explícita. Cada cartão permite **Excluir trecho** e **Desfazer** antes de salvar. Após salvar, os trechos excluídos deixam de participar da transcrição, das pendências e das exportações, mas permanecem em **Trechos excluídos**, com opção de restauração ao salvar. A exclusão conserva texto, alternativas, horários e áudio original. Apagar o texto de uma fala durante a revisão mantém o campo vazio; a primeira versão permanece disponível para auditoria.
 
 “Ouvir trecho” reproduz o intervalo com um segundo de contexto em cada borda, limitado à duração do arquivo. O player permite pausar, repetir e selecionar velocidade. Uma versão MP3 de 64 kbps é gerada separadamente para reprodução. Para pedidos antigos, a geração é solicitada por POST e executada pelo worker, sem retranscrição.
 
